@@ -458,6 +458,13 @@ def cmd_embed(args) -> int:
             st = semantic.status(archive)
             print(f"model: {st.get('model', '(none yet)')}  dim: {st.get('dim', '-')}  store: {st.get('backend', '-')}")
             print(f"messages embedded: {st['messages_embedded']} of {st['messages']}  chunks: {st['chunks']}")
+            from . import reranker as rr
+            if rr.disabled():
+                print(f"reranker: off ({rr.RERANK_ENV}=off)")
+            else:
+                ready = rr.get_reranker() is not None
+                print(f"reranker: {rr.DEFAULT_RERANKER} " + ("(ready)" if ready else
+                      "(not downloaded: run `new-outlook embed --download` for better search by meaning)"))
             if st["chunking_outdated"]:
                 print("embedded with older chunking rules (footers and banners included). "
                       "Run `new-outlook embed --reembed` for better search by meaning.")
@@ -480,6 +487,14 @@ def cmd_embed(args) -> int:
         except emb.SemanticUnavailable as exc:
             print(str(exc), file=sys.stderr)
             return 2
+        if args.download and not emb.fake_requested():
+            from . import reranker as rr
+            if not rr.disabled():
+                print(f"downloading reranker {rr.DEFAULT_RERANKER} once ({rr.APPROX_DOWNLOAD}).")
+                try:
+                    rr.get_reranker(allow_download=True)
+                except Exception as exc:
+                    print(f"could not fetch the reranker ({exc}); search works without it", file=sys.stderr)
         pending = semantic.pending_count(archive)
         print(f"model {embedder.name} ({embedder.dim} dims), {pending} messages to embed")
 

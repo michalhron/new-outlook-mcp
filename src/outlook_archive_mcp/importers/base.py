@@ -60,6 +60,10 @@ class Importer(ABC):
     def iter_records(self, snapshot: Path, *, skip_keys: set[str]) -> Iterator[MessageRecord]:
         """Yield normalized records. Update `self.stats` while iterating."""
 
+    #: When False, every run re-reads all records (for live caches whose records change:
+    #: folder moves, attachments downloaded later). Merging keeps this idempotent.
+    incremental: bool = True
+
     #: When True, zero calendar events after earlier non-zero runs is flagged as drift.
     expect_events: bool = False
 

@@ -163,7 +163,16 @@ Run these on your Mac after the first import. None of them change Outlook's file
 
 ## HxStore (New Outlook)
 
-See [docs/hxstore-notes.md](docs/hxstore-notes.md) for the format notes and the status of the importer.
+The `hxstore` importer decodes New Outlook's cache directly: CRC-checked LZ4 blocks, then typed objects for messages, recipients, folders, accounts, attachments and calendar events. [docs/hxstore-notes.md](docs/hxstore-notes.md) documents the format with a confidence level per field. It also lists the experiments that would settle the open points.
+
+What to expect:
+
+- The cache holds only what New Outlook has synced, about the last 180 days. Some messages keep only a preview of about 255 characters. Those show the preview as the body.
+- Bodies too large for the store, and all attachment files, live under `Main Profile/Files/`. They are read in place. An attachment Outlook has not downloaded is listed with `available_locally: false`.
+- Every sync re-reads the whole cache, because messages move between folders and attachments get downloaded later. Merging makes this idempotent.
+- Only weekly recurrence is decoded so far. Other recurring series show their first occurrence only, and the sync notes count them.
+- The importer checks the format version and the fixed object sizes per class. After an Outlook update that changes the layout, it skips the unknown objects, reports possible format drift, and the LaunchAgent shows a notification.
+- Read state, flags and Bcc are not decoded yet.
 
 ## Development
 

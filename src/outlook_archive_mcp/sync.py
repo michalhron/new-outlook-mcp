@@ -61,7 +61,7 @@ def run_import(
     importer.bind(archive)
     try:
         snap = importer.snapshot(snap_dir)
-        skip = set() if full else archive.known_source_keys(name)
+        skip = set() if (full or not importer.incremental) else archive.known_source_keys(name)
         for rec in importer.iter_records(snap, skip_keys=skip):
             try:
                 with archive.transaction():

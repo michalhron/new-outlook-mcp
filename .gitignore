@@ -227,3 +227,6 @@ __marimo__/
 Outlook.sqlite*
 # Already tracked on main by mistake; to be removed from history by the owner.
 !samples/hxstore.hxd.zip
+
+# Local agent worktrees
+.claude/worktrees/

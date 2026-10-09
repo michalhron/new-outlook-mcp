@@ -169,6 +169,34 @@ Options: `--interval-hours 36`, `--source` with one source or a comma list (defa
 
 The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when HxStore objects have a layout it does not know. The last two usually mean an Outlook update changed the file format.
 
+## Near-live sync
+
+The 36 hour job is the fallback. The primary mechanism is a watcher that syncs a minute or so after Outlook changes its cache. Install both agents:
+
+```sh
+pip install 'new-outlook-mcp[watch]'   # optional: watchdog uses FSEvents instead of polling
+new-outlook launchd install --watch    # watcher, kept alive by launchd (log: watch.log)
+new-outlook launchd install            # 36 hour fallback job
+new-outlook launchd print --watch      # show the watcher plist
+new-outlook launchd uninstall --watch
+```
+
+You can also run it by hand with `new-outlook watch`. Add `--once` to sync now and exit.
+
+How it works:
+
+- It watches `HxStore.hxd`, `hxcore.hfl` and the `Files/` folder in the Outlook profile.
+- Debounce: it waits until 20 s pass with no new change (`--debounce`). A burst of writes gives one sync.
+- Rate limit: at most one sync per 60 s (`--min-interval`).
+- Without watchdog it polls file sizes and modification times every 15 s (`--poll`).
+- Each sync runs `new-outlook sync --source hxstore` in a child process with a 600 s time limit (`--timeout`). Memory goes back to the system afterwards.
+- If the copy was torn (Outlook was writing) or the sync fails, the watcher waits 5 minutes and tries again.
+- It writes `watch-state.json` in the app folder with a heartbeat. `new-outlook status` and the `archive_status` tool show a `sync_health` block: last sync, lag between the newest archived message and now, whether the watcher is alive, and the last drift warning.
+
+What it costs: an idle watcher uses almost no CPU. A sync copies the store and decodes it, which takes seconds to a minute depending on size. The agent runs with low CPU and disk priority (`Nice`, `LowPriorityIO`, `ProcessType=Background`), so Outlook keeps priority. It never writes to Outlook's files.
+
+Limits: there is no way to fetch mail from the server on demand. The archive only sees what New Outlook has cached. Searching in Outlook for an old message makes Outlook download the results into its cache. The watcher then picks them up within about a minute. This is the on-demand workaround.
+
 ## How it stays read-only
 
 - Every import starts with a snapshot: Outlook's database files are copied to a private, timestamped folder under `~/Library/Application Support/new-outlook-mcp/snapshots/`. A copy that changes while it is being copied is retried. Parsers read only the copy, and SQLite copies are opened with `mode=ro&immutable=1` after the WAL has been folded into the copy.

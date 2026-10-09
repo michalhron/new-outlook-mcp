@@ -84,6 +84,7 @@ Changing the code:
 - [Architecture](docs/ARCHITECTURE.md): data flow, modules, schema, adding a source.
 - [HxStore notes](docs/hxstore-notes.md) and [legacy notes](docs/legacy-notes.md): the two Outlook formats.
 - [Roadmap](docs/ROADMAP.md) and [ideas](docs/IDEAS.md).
+- [Next steps and the personal-index overhaul](docs/next-steps-and-personal-index.md): measured search quality, small next steps, and the plan to grow the archive into a general index for mail, notes and files.
 
 ## Development
 

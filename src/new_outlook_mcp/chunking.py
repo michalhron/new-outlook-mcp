@@ -156,17 +156,46 @@ def _paragraphs(spans: list[tuple[int, int, str]], keep) -> list[tuple[int, int]
     return paras
 
 
-def body_paragraphs(text: str) -> list[tuple[int, int]]:
-    """Paragraph offsets of a mail body without quoted replies, signature and device footers."""
+_INVISIBLE = re.compile(r"[\u00ad\u034f\u180e\u200b-\u200f\u2060-\u2064\ufeff]")
+
+
+def line_key(line: str) -> str:
+    """A line folded for boilerplate counting: case, spacing, invisible padding and edge punctuation ignored."""
+    s = _INVISIBLE.sub("", unicodedata.normalize("NFKC", line)).casefold()
+    s = re.sub(r"\s+", " ", s)
+    return s.strip(" \t.,;:!?-–—_*|•·()[]\"'")
+
+
+def mostly_symbols(text: str, min_alnum_share: float = 0.3) -> bool:
+    """True for text that is mostly punctuation or padding, like a row of commas."""
+    stripped = re.sub(r"\s+", "", text)
+    if not stripped:
+        return True
+    return sum(ch.isalnum() for ch in stripped) / len(stripped) < min_alnum_share
+
+
+def kept_lines(text: str) -> list[str]:
+    """The lines of a mail body that survive quote and signature stripping (before boilerplate removal)."""
+    return [line for s, e in body_paragraphs(text) for line in text[s:e].split("\n")]
+
+
+def body_paragraphs(text: str, boilerplate: frozenset[str] | set[str] = frozenset()) -> list[tuple[int, int]]:
+    """Paragraph offsets of a mail body without quoted replies, signature and device footers.
+
+    Lines whose `line_key` is in `boilerplate` (footers repeated across many messages) are dropped too.
+    """
     spans = _line_spans(text)
     lines = [x[2] for x in spans]
     cut, drops = _find_cut(lines)
 
     def keep(i: int, line: str) -> bool:
         return (i < cut and i not in drops and not line.lstrip().startswith(">") and not _RULE.match(line)
-                and not _DEVICE_SIG.match(line))
+                and not _DEVICE_SIG.match(line) and not mostly_symbols(line)
+                and not (boilerplate and line_key(line) in boilerplate))
 
     paras = _paragraphs(spans, keep)
+    if not paras and boilerplate:  # a message that is all boilerplate keeps its usual paragraphs
+        return body_paragraphs(text)
     if not paras:  # never strip a message down to nothing
         paras = _paragraphs(spans, lambda i, line: not line.lstrip().startswith(">")) \
             or _paragraphs(spans, lambda i, line: True)
@@ -246,11 +275,12 @@ def chunk_paragraphs(text: str, paras: list[tuple[int, int]], *, target: int = T
     return [c for c in chunks if len(c.text) >= MIN_CHARS or len(chunks) == 1]
 
 
-def chunk_body(text: str | None, **kw) -> list[Chunk]:
-    """Chunks of a mail body: quotes and signature removed, split by paragraph."""
+def chunk_body(text: str | None, boilerplate: frozenset[str] | set[str] = frozenset(), **kw) -> list[Chunk]:
+    """Chunks of a mail body: quotes, signature and boilerplate lines removed, split by paragraph."""
     if not text or not text.strip():
         return []
-    return chunk_paragraphs(text, body_paragraphs(text), **kw)
+    chunks = chunk_paragraphs(text, body_paragraphs(text, boilerplate), **kw)
+    return [c for c in chunks if not mostly_symbols(c.text)]  # left when a body is nothing but symbols
 
 
 def chunk_plain(text: str | None, **kw) -> list[Chunk]:
@@ -258,4 +288,4 @@ def chunk_plain(text: str | None, **kw) -> list[Chunk]:
     if not text or not text.strip():
         return []
     spans = _line_spans(text)
-    return chunk_paragraphs(text, _paragraphs(spans, lambda i, line: True), **kw)
+    return chunk_paragraphs(text, _paragraphs(spans, lambda i, line: not mostly_symbols(line)), **kw)

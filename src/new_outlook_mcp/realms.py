@@ -131,6 +131,29 @@ def account_ids(conn, realm: str, realms: dict | None = None) -> list[int]:
     return [r[0] for r in conn.execute("SELECT id, name FROM accounts") if realm_of(r[1], realms) == realm]
 
 
+def message_in_accounts_sql(m: str, ids: list[int]) -> str:
+    """SQL that is true when message alias `m` is held in one of these accounts.
+
+    A message merged from several sources (say work Outlook and HEY) is held in the
+    account of each, so it belongs to every realm among them.
+    """
+    if not ids:
+        return "0"
+    id_list = ",".join(str(int(i)) for i in ids)
+    return (f"({m}.account_id IN ({id_list}) OR EXISTS (SELECT 1 FROM message_sources s"
+            f" WHERE s.message_pk = {m}.id AND s.account_id IN ({id_list})))")
+
+
+def realms_of_message(conn, message_pk: int, realms: dict | None = None) -> list[str]:
+    """Realms of every account that holds a message, in REALMS order."""
+    realms = load_realms() if realms is None else realms
+    names = [r[0] for r in conn.execute(
+        """SELECT a.name FROM accounts a WHERE a.id = (SELECT account_id FROM messages WHERE id = ?)
+           OR a.id IN (SELECT account_id FROM message_sources WHERE message_pk = ?)""", (message_pk, message_pk))]
+    found = {realm_of(n, realms) for n in names}
+    return [r for r in REALMS if r in found]
+
+
 def add(realm: str, entries: list[str]) -> int:
     """Assign accounts or @domains to a realm. An entry moves out of the other realm. Returns how many changed."""
     if realm not in REALMS:

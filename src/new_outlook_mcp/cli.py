@@ -136,6 +136,9 @@ def cmd_status(args) -> int:
     if not Path(args.db).exists():
         print(f"no archive yet at {args.db}. Run `new-outlook sync` first.")
         return 1
+    with Archive(args.db) as archive:  # read-write once, so an old archive is upgraded
+        for change in archive.migrated:
+            print(f"upgraded archive: {change}", file=sys.stderr)
     with Archive(args.db, readonly=True) as archive:
         st = archive_status(archive)
     if args.json:
@@ -455,6 +458,9 @@ def cmd_embed(args) -> int:
             st = semantic.status(archive)
             print(f"model: {st.get('model', '(none yet)')}  dim: {st.get('dim', '-')}  store: {st.get('backend', '-')}")
             print(f"messages embedded: {st['messages_embedded']} of {st['messages']}  chunks: {st['chunks']}")
+            if st["chunking_outdated"]:
+                print("embedded with older chunking rules (footers and banners included). "
+                      "Run `new-outlook embed --reembed` for better search by meaning.")
             return 0
         model = args.model or (state or {}).get("model") or emb.DEFAULT_MODEL
         if args.reembed:
@@ -668,6 +674,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    # pypdf warns about every repairable defect in a PDF attachment ("Ignoring wrong pointing object").
+    # The text is still read, so these only bury progress output; -v shows them.
+    if not args.verbose:
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
     return args.func(args)
 
 

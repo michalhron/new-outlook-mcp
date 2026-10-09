@@ -18,7 +18,7 @@ from .sync import sync
 from .tools import archive_status
 
 SOURCES = [*IMPORTERS, "all"]
-LAUNCHD_DEFAULT_SOURCES = "hxstore,ics"
+LAUNCHD_DEFAULT_SOURCES = "hxstore,ics,eml"
 
 
 def _source_list(value: str) -> list[str]:
@@ -309,6 +309,69 @@ def cmd_calendar(args) -> int:
     return 2
 
 
+def cmd_eml(args) -> int:
+    from .importers import eml
+
+    if args.action == "list":
+        folders = eml.load_folders()
+        if not folders:
+            print("no .eml folders configured")
+        for f in folders:
+            state = "" if f.path.is_dir() else "  (folder not found)"
+            print(f"{f.name}  {f.path}  account {f.account}  files {len(eml.eml_files(f.path))}{state}")
+        return 0
+    if args.action == "add":
+        if not (args.name and args.path and args.account):
+            print("usage: new-outlook eml add NAME PATH --account ADDRESS", file=sys.stderr)
+            return 2
+        try:
+            f = eml.add_folder(args.name, args.path, args.account)
+        except eml.EmlConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        note = "" if f.path.is_dir() else " The folder does not exist yet; it is read once it does."
+        print(f"added .eml folder {f.name!r}: {f.path} as account {f.account}.{note} Run: new-outlook sync --source eml")
+        return 0
+    if args.action == "remove":
+        if not eml.remove_folder(args.name or ""):
+            print(f"no .eml folder named {args.name!r}", file=sys.stderr)
+            return 2
+        print(f"removed .eml folder {args.name!r}. Mail already imported stays in the archive.")
+        return 0
+    return 2
+
+
+def cmd_realm(args) -> int:
+    from . import realms
+
+    if args.action == "show":
+        table = realms.load_realms()
+        for realm in realms.REALMS:
+            print(f"{realm}: {', '.join(table[realm]) or '(none)'}")
+        print(f"unlinked Outlook cache files: {table['files']}")
+        print(f"searches cover by default: {realms.default_view(table)}")
+        print(f"server fence: {realms.default_fence()}")
+        if Path(args.db).exists():
+            with Archive(args.db, readonly=True) as archive:
+                names = [r[0] for r in archive.conn.execute("SELECT name FROM accounts ORDER BY name")]
+            for n in names:
+                print(f"  {n}: {realms.realm_of(n, table) or 'unassigned'}")
+        return 0
+    if args.action == "add":
+        if args.realm not in realms.REALMS or not args.entries:
+            print("usage: new-outlook realm add work|private ACCOUNT_OR_@DOMAIN ...", file=sys.stderr)
+            return 2
+        n = realms.add(args.realm, args.entries)
+        print(f"{n} entr{'y' if n == 1 else 'ies'} added to {args.realm}")
+        return 0
+    if args.action == "remove":
+        entries = [args.realm, *args.entries] if args.realm else args.entries
+        n = realms.remove(entries)
+        print(f"{n} entr{'y' if n == 1 else 'ies'} removed")
+        return 0
+    return 2
+
+
 def cmd_coverage(args) -> int:
     from datetime import date
 
@@ -437,7 +500,7 @@ def cmd_search(args) -> int:
         try:
             res = tools.search_emails(archive, args.query, from_=args.sender, folder=args.folder,
                                       date_from=args.date_from, date_to=args.date_to, limit=args.limit,
-                                      mode=args.mode)
+                                      mode=args.mode, realm=args.realm)
         except tools.ToolInputError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -532,6 +595,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("name", nargs="?", help="feed name, or comma-separated addresses for set-my-addresses")
     s.set_defaults(func=cmd_calendar)
 
+    s = sub.add_parser("eml", help="folders of .eml files to import, e.g. mcp-hey's HEY_ARCHIVE_DIR")
+    s.add_argument("action", choices=["list", "add", "remove"])
+    s.add_argument("name", nargs="?", help="folder name, e.g. hey")
+    s.add_argument("path", nargs="?", help="folder path (add)")
+    s.add_argument("--account", help="account for its messages, e.g. you@hey.com (add)")
+    s.set_defaults(func=cmd_eml)
+
+    s = sub.add_parser("realm", help="assign accounts to the work or private realm")
+    s.add_argument("action", choices=["show", "add", "remove"])
+    s.add_argument("realm", nargs="?", help="work or private (add)")
+    s.add_argument("entries", nargs="*", help="account names, addresses or @domains")
+    s.set_defaults(func=cmd_realm)
+
     s = sub.add_parser("coverage", help="message counts per account and folder by received week and day")
     s.add_argument("--source", choices=["hxstore", "legacy", "all"], default="hxstore",
                    help="which archived source to count (default: hxstore)")
@@ -579,6 +655,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--date-from")
     s.add_argument("--date-to")
     s.add_argument("--limit", type=int, default=10)
+    s.add_argument("--realm", choices=["work", "private", "all"], help="default: the default realm (work)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_search)
 

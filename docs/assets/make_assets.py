@@ -441,3 +441,26 @@ g += t(848, 330, "moved occurrence", 13, color=RUST, anchor="middle") + t(1000, 
 g += t(46, 440, "A modified occurrence is stored as its own event and replaces the regular one on that day. Times hold across daylight saving changes.", 16)
 save("calendar", 1200, 468, g, "Calendar merge and recurrence expansion")
 print("figures ok")
+
+# ---------------------------------------------------------------- realms
+g = header("WORK AND PRIVATE", "One archive. Work by default, private on request.")
+g += band(36, 130, 1128, 270, "")
+g += dot(330, 205, 14) + t(300, 200, "Outlook", 17, weight=600, anchor="end") + t(300, 222, "work", 14, color=TAUPE, anchor="end")
+g += ring(330, 315, 11) + t(300, 310, "HEY, via mcp-hey", 17, weight=600, anchor="end")
+g += t(300, 332, "private  ·  only what you read", 14, color=TAUPE, anchor="end")
+g += chain([(330, 205), (540, 260)], gap=24) + chain([(330, 315), (540, 260)], gap=24)
+g += f'<rect x="526" y="246" width="28" height="28" fill="{RUST}"/>' + t(540, 230, "archive.db", 16, weight=600,
+                                                                             anchor="middle", font=MONO)
+g += t(540, 302, "one index", 14, color=TAUPE, anchor="middle")
+rows = [(185, "default", "work", [1, 1, 1, 1, 1]), (260, 'realm="private"', "private", [0, 0, 0]),
+        (335, 'realm="all"', "both", [1, 0, 1, 1, 0, 1, 0])]
+for y, lab, sub_, marks in rows:
+    g += line(570, 260, 700, y, w=3, color=NAVY if lab == "default" else STEEL, head=False)
+    g += t(720, y + 5, lab, 15, font=MONO, weight=600) + t(720, y + 25, sub_, 13, color=TAUPE)
+    for i, m in enumerate(marks):
+        x = 910 + i * 34
+        g += dot(x, y, 9) if m else ring(x, y, 8)
+g += t(46, 440, "A server started with --realm work returns work mail only, whatever a call asks for.", 16)
+g += t(46, 466, "Accounts without a realm are hidden behind a fence and shown only when a search covers all mail.", 16)
+save("realms", 1200, 494, g, "Work and private realms")
+print("realms ok")

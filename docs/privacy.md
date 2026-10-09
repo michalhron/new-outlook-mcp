@@ -42,6 +42,8 @@ The rules live in `config.toml` under `[exclude]`. You can edit them there. A ty
 
 ## How rules apply
 
+<p align="center"><img src="assets/privacy.svg" alt="Mail passes an import filter that drops excluded items, then the archive, then a query filter at every tool call. purge-excluded deletes stored matches with their chunks and vectors." width="100%"></p>
+
 - At import: matching mail is dropped before it reaches the archive. It is never indexed, chunked or embedded.
 - At query time: every tool filters again, so a new rule works at once, before any purge. This covers keyword search, search by meaning, `find_similar`, threads, attachments, folders, counts and the calendar.
 - Calendar events follow the account, organizer (as sender or domain) and subject rules.

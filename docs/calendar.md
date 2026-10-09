@@ -12,6 +12,8 @@ The archive holds calendar events from up to three sources and merges them into 
 
 Events from all sources merge by their iCalendar UID and recurrence id. New Outlook wins over the feed, and both win over the legacy archive. A modified occurrence of a series is kept as its own event and replaces the regular occurrence on that day.
 
+<p align="center"><img src="assets/calendar.svg" alt="Three sources with priorities merge into one event per UID. A weekly series expands into occurrences, with one moved occurrence and one cancelled date." width="100%"></p>
+
 After each calendar import, recurring series are expanded into concrete occurrences in the event's own timezone, so a weekly 10:00 meeting in Prague stays at 10:00 local time across daylight saving changes.
 
 ## Published calendar feed

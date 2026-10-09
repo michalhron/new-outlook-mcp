@@ -87,6 +87,8 @@ new-outlook launchd install            # the 36 h fallback job
 new-outlook status                     # last sync, lag, watcher alive
 ```
 
+<p align="center"><img src="assets/watcher.svg" alt="Timeline: Outlook writes, 20 seconds of quiet, then a sync. At least 60 seconds between sync starts. A torn copy leads to a 5 minute back-off." width="100%"></p>
+
 How the watcher behaves:
 
 - It waits until Outlook's files have been quiet for 20 seconds, then syncs.

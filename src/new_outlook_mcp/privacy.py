@@ -386,6 +386,27 @@ def _folder_unused(conn: sqlite3.Connection, folder_id: int, ignoring: set[int])
     return not (ids - ignoring)
 
 
+def _delete_vectors(archive, message_ids: list[int]) -> None:
+    """Delete the embedding vectors of these messages. Their chunks go with the messages (cascade)."""
+    conn = archive.conn
+    tables = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE name IN ('chunk_vec', 'chunk_vectors')")}
+    if not tables:
+        return
+    sub = f"SELECT id FROM chunks WHERE message_pk IN ({_marks(len(message_ids))})"
+    if "chunk_vectors" in tables:
+        conn.execute(f"DELETE FROM chunk_vectors WHERE chunk_id IN ({sub})", message_ids)
+    if "chunk_vec" in tables:
+        from .vectors import _try_load_vec
+
+        if not _try_load_vec(archive):
+            raise RuntimeError("cannot delete vectors: the sqlite-vec extension does not load. "
+                               "Install the [semantic] extra and run purge-excluded again.")
+        ids = [r[0] for r in conn.execute(sub, message_ids)]
+        conn.executemany("DELETE FROM chunk_vec WHERE rowid = ?", [(i,) for i in ids])
+    archive._blob_cache = None
+
+
 def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict[str, int]:
     """Delete archived messages and events that match the rules. Returns counts only."""
     rules = load_rules() if rules is None else rules
@@ -421,6 +442,7 @@ def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict
             conn.execute(f"DELETE FROM orphan_files WHERE id IN ({marks})", chunk)
         for chunk in _chunks(mids):
             marks = _marks(len(chunk))
+            _delete_vectors(archive, chunk)
             conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({marks})", chunk)
             conn.execute(f"DELETE FROM messages WHERE id IN ({marks})", chunk)  # cascades attachments, sources
         for chunk in _chunks(eids):
@@ -445,6 +467,8 @@ def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict
     # Deleted text can survive in FTS segments, free pages and the WAL: merge, checkpoint and rewrite the file.
     conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('optimize')")
     conn.execute("INSERT INTO events_fts(events_fts) VALUES ('optimize')")
+    if has_orphans:
+        conn.execute("INSERT INTO orphan_fts(orphan_fts) VALUES ('optimize')")
     conn.commit()
     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
     conn.execute("VACUUM")

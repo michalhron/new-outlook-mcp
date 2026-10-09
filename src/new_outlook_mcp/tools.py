@@ -357,6 +357,7 @@ def archive_status(archive: Archive) -> dict:
     return {
         "database": str(archive.path),
         "counts": archive.counts(),
+        "accounts": archive.account_overview(),
         "coverage_by_source": archive.coverage(),
         "calendar_coverage_by_source": archive.calendar_coverage(),
         "last_sync_by_source": archive.last_runs(),

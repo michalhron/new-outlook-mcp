@@ -130,6 +130,10 @@ def cmd_status(args) -> int:
     print("counts:  " + ", ".join(f"{k}={v}" for k, v in st["counts"].items()))
     for c in st["coverage_by_source"]:
         print(f"  {c['source']:8} {c['n']:>7} messages  {c['first']} .. {c['last']}")
+    if st.get("accounts"):
+        print("per account and source (newest message shows where coverage ends):")
+        for a in st["accounts"]:
+            print(f"  {a['account'][:40]:<40} {a['source']:8} {a['messages']:>7}  newest {a['newest'] or '-'}")
     for r in st["last_sync_by_source"]:
         print(f"  last {r['source']} sync: {r['status']} at {r['finished_at'] or r['started_at']}"
               f" (new={r['inserted']}, seen={r['seen']})" + (f" {r['message']}" if r["message"] else ""))

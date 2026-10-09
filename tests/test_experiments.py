@@ -84,3 +84,14 @@ def test_experiment_errors(profile, tmp_path, capsys):
                      "--hxstore", str(profile / "HxStore.hxd")]) == 2
     assert cli.main(["experiment", "list"]) == 0
     assert "recurrence" in capsys.readouterr().out
+
+
+def test_experiment_still_runs_when_layout_changed(profile, tmp_path):
+    objs = mailbox(profile)
+    objs.append(ObjSpec(hx.C_MESSAGE, 0x5999, fs=0x620, strings={0x598: "HXPROBE-L1"}))
+    write_store(profile / "HxStore.hxd", objs)
+    base = tmp_path / "exps"
+    experiments.start("lay", "pair", hxstore=profile / "HxStore.hxd", base=base)
+    report = experiments.finish("lay", base=base).read_text()
+    assert "LAYOUT CHANGED (before)" in report and "0x620" in report
+    assert "'HXPROBE-L1'" in report  # the new-size object is still diffed structurally

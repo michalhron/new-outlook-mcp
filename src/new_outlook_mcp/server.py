@@ -26,7 +26,8 @@ Local, read-only archive of the user's Outlook for Mac mail and calendar: the
 frozen legacy Outlook archive, the New Outlook cache, and optional published
 ICS feeds. Search with search_emails, then open a message with get_email (use
 its `id`). Bodies are plain text and may be truncated: pass `offset` =
-`next_offset` to continue. Calendar tools work on the user's own calendar only.
+`next_offset` to continue. search_files finds attachment files and bodies in Outlook's
+cache that no archived message owns. Calendar tools work on the user's own calendar only.
 Nothing here can send mail, answer invitations, or change calendar events.
 create_draft and create_event_draft only open a draft that the user reviews
 and sends or saves themselves.
@@ -145,7 +146,8 @@ def build_server(db_path: Path | None = None) -> MCPServer:
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False,
                                              idempotent_hint=True, open_world_hint=False))
     def get_attachment(
-        attachment_id: Annotated[int, Field(description="attachment_id from list_attachments")],
+        attachment_id: Annotated[int | str, Field(
+            description="attachment_id from list_attachments, or an id like 'orphan:12' from search_files")],
         mode: Annotated[Literal["text", "path", "open"], Field(
             description="text: extract readable text (PDF, Word, Excel, plain text, CSV, calendar); "
                         "path: return a local file path; open: open the file in its default Mac app")] = "text",
@@ -153,8 +155,26 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         max_chars: Annotated[int, Field(ge=100, le=100000)] = tools.DEFAULT_BODY_CHARS,
     ) -> dict:
         """Read an attachment from local storage. Never downloads from a server: if the file is not
-        on this Mac, the result says so."""
+        on this Mac, the result says so. Ids like 'orphan:12' are files that no archived message owns:
+        their text stays available even after Outlook deletes the file."""
         return call(tools.get_attachment, attachment_id, mode=mode, offset=offset, max_chars=max_chars)
+
+    @server.tool(annotations=READ_ONLY)
+    def search_files(
+        query: Annotated[str | None, Field(description="Full-text query (FTS5 syntax) over file name and text. "
+                                                      "Omit to list the newest files.")] = None,
+        kind: Annotated[Literal["attachment", "body"] | None, Field(
+            description="attachment: attachment files; body: cached message bodies")] = None,
+        date_from: Annotated[str | None, Field(description="Earliest file date, YYYY-MM-DD or ISO 8601 (UTC)")] = None,
+        date_to: Annotated[str | None, Field(description="Latest file date, inclusive")] = None,
+        limit: Annotated[int, Field(ge=1, le=200)] = 20,
+        offset: Annotated[int, Field(ge=0)] = 0,
+    ) -> dict:
+        """Search files in Outlook's Files/ cache that belong to no archived message (attachments and bodies
+        of mail that has left the cache). Read one with get_attachment using its `attachment_id` ('orphan:<n>').
+        Dates are file dates, not send dates. Use search_emails for mail itself."""
+        return call(tools.search_files, query, kind=kind, date_from=date_from, date_to=date_to, limit=limit,
+                    offset=offset)
 
 
     @server.tool(annotations=READ_ONLY)

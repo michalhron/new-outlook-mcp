@@ -29,25 +29,41 @@ class Chunk:
 
 _ORIGINAL_MSG = re.compile(
     r"^\s*[-_ ]{2,}\s*(original message|původní zpráva|ursprüngliche nachricht|message d'origine|"
-    r"forwarded message|přeposlaná zpráva)\s*[-_ ]{2,}\s*$", re.IGNORECASE)
+    r"forwarded message|přeposlaná zpráva|"
+    r"oprindelig meddelelse|videresendt meddelelse|"  # Danish
+    r"oorspronkelijk bericht|doorgestuurd bericht|"  # Dutch
+    r"alkuperäinen viesti|välitetty viesti)\s*[-_ ]{2,}\s*$", re.IGNORECASE)  # Finnish
 _WROTE = [
     re.compile(r"^On\b.{0,300}?\bwrote:\s*$", re.DOTALL),
     re.compile(r"^Dne\b.{0,300}?\bnapsal(?:a|i|\(a\))?\s*:\s*$", re.DOTALL | re.IGNORECASE),
     re.compile(r"^(Am|Le|El|Il)\b.{0,300}?\b(schrieb|a écrit|escribió|ha scritto)\b.{0,40}:\s*$",
                re.DOTALL | re.IGNORECASE),
+    re.compile(r"^(Den|D\.)\s.{0,300}?\bskrev\b.{0,40}:\s*$", re.DOTALL | re.IGNORECASE),  # Danish
+    re.compile(r"^Op\s.{0,300}?\bschreef\b.{0,40}:\s*$", re.DOTALL | re.IGNORECASE),  # Dutch
+    re.compile(r"^.{0,300}?\bkirjoitti\s*:\s*$", re.DOTALL | re.IGNORECASE),  # Finnish: date and name first
 ]
-_HDR_FROM = re.compile(r"^\s*(From|Od|Von|De)\s*:\s*\S", re.IGNORECASE)
-_HDR_SENT = re.compile(r"^\s*(Sent|Date|Odesláno|Odeslano|Datum|Gesendet|Envoyé)\s*:", re.IGNORECASE)
-_HDR_OTHER = re.compile(r"^\s*(To|Komu|An|À|Subject|Předmět|Predmet|Betreff|Cc|Kopie)\s*:", re.IGNORECASE)
+# Outlook reply headers. da: Fra/Sendt/Til/Emne, nl: Van/Verzonden/Aan/Onderwerp,
+# fi: Lähettäjä/Lähetetty/Vastaanottaja/Aihe/Kopio.
+_HDR_FROM = re.compile(r"^\s*(From|Od|Von|De|Fra|Van|Lähettäjä|Lahettaja)\s*:\s*\S", re.IGNORECASE)
+_HDR_SENT = re.compile(r"^\s*(Sent|Date|Odesláno|Odeslano|Datum|Gesendet|Envoyé|Sendt|Dato|Verzonden|"
+                       r"Verstuurd|Lähetetty|Lahetetty|Päivämäärä)\s*:", re.IGNORECASE)
+_HDR_OTHER = re.compile(r"^\s*(To|Komu|An|À|Subject|Předmět|Predmet|Betreff|Cc|Kopie|Til|Emne|Aan|Onderwerp|"
+                        r"Vastaanottaja|Aihe|Kopio)\s*:", re.IGNORECASE)
 _SIG_DELIM = re.compile(r"^--\s?$")
 _RULE = re.compile(r"^\s*[_\-=*~]{5,}\s*$")
 _DEVICE_SIG = re.compile(
     r"^\s*(sent from my \w+|sent from outlook for \w+|get outlook for \w+|odesláno z \w+|odeslano z \w+|"
-    r"sent from mail for windows)\b.{0,40}$", re.IGNORECASE)
+    r"sent from mail for windows|sendt fra min \w+|verzonden (vanaf|met) (mijn )?\w+|"
+    r"lähetetty \w+-?(laitteesta|puhelimesta)?|lähetetty (iphonesta|androidista|outlookista)\w*)\b.{0,40}$",
+    re.IGNORECASE)
 _CLOSER = re.compile(
     r"^(best regards|kind regards|warm regards|regards|best wishes|sincerely|yours sincerely|cheers|"
     r"thanks|thank you|many thanks|best|s pozdravem|s pratelskym pozdravem|srdecne zdravi|zdravi|zdravim|"
-    r"hezky den|diky|dekuji|mit freundlichen gruessen|mit freundlichen grussen|viele gruesse)"
+    r"hezky den|diky|dekuji|mit freundlichen gruessen|mit freundlichen grussen|viele gruesse|"
+    r"med venlig hilsen|venlig hilsen|mange hilsner|hilsen|mvh|kærlig hilsen|kaerlig hilsen|tak|"  # Danish
+    r"met vriendelijke groet|met vriendelijke groeten|vriendelijke groet|hartelijke groet|groeten|mvg|"  # Dutch
+    r"bedankt|dank je|dank u|"
+    r"ystavallisin terveisin|parhain terveisin|terveisin|kiitos|kiitoksin)"  # Finnish (folded)
     r"\s*[,.!]?\s*(\S+)?\s*$")
 
 

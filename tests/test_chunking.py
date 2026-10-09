@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from new_outlook_mcp import chunking
 from new_outlook_mcp.chunking import MAX_CHARS, chunk_body, chunk_plain, strip_quotes_and_signature
 
 
@@ -86,3 +89,36 @@ def test_chunk_body_drops_quote_content():
     text = "My new idea is about reframing.\n\n> old quote about zebras\n"
     joined = " ".join(c.text for c in chunk_body(text))
     assert "reframing" in joined and "zebras" not in joined
+
+
+@pytest.mark.parametrize("reply, quote_header, closer, kept, dropped", [
+    # Danish
+    ("Tak for mødet, jeg sender rapporten i morgen.",
+     "Den 5. mar. 2026 kl. 09.15 skrev Ada Example <ada@example.org>:", "Med venlig hilsen\nAda",
+     "sender rapporten", "skrev"),
+    # Dutch
+    ("Bedankt voor het overleg, ik stuur het verslag morgen.",
+     "Op 5 mrt. 2026 om 09:15 schreef Ada Example <ada@example.org>:", "Met vriendelijke groet,\nAda",
+     "stuur het verslag", "schreef"),
+    # Finnish
+    ("Kiitos kokouksesta, lähetän raportin huomenna.",
+     "Ti 5.3.2026 klo 9.15 Ada Example <ada@example.org> kirjoitti:", "Ystävällisin terveisin\nAda",
+     "lähetän raportin", "kirjoitti"),
+])
+def test_quote_and_closer_stripping_nordic_and_dutch(reply, quote_header, closer, kept, dropped):
+    text = f"{reply}\n\n{closer}\n\n{quote_header}\n> The original message text.\n"
+    out = chunking.strip_quotes_and_signature(text)
+    assert kept in out and dropped not in out and "original message" not in out
+    assert closer.splitlines()[0] not in out
+
+
+@pytest.mark.parametrize("headers, marker", [
+    ("Fra: Ada Example <ada@example.org>\nSendt: 5. marts 2026 09:15\nTil: Bob\nEmne: Rapport", "Emne"),
+    ("Van: Ada Example <ada@example.org>\nVerzonden: 5 maart 2026 09:15\nAan: Bob\nOnderwerp: Verslag", "Onderwerp"),
+    ("Lähettäjä: Ada Example <ada@example.org>\nLähetetty: 5. maaliskuuta 2026 9.15\nVastaanottaja: Bob\nAihe: Raportti",
+     "Aihe"),
+])
+def test_outlook_reply_headers_nordic_and_dutch(headers, marker):
+    text = f"Short answer here.\n\n{headers}\n\nOld quoted body that should go."
+    out = chunking.strip_quotes_and_signature(text)
+    assert "Short answer here." in out and marker not in out and "Old quoted body" not in out

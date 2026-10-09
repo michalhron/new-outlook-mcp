@@ -34,6 +34,8 @@ Ground rules for every phase:
 - [x] Message records: subject, sender, recipients, dates, folder, account, Message-ID, body
 - [ ] Message flags and read state, Bcc
 - [x] Attachment records → mapping to files in `Main Profile/Files/` (format verified; real files pending an experiment)
+- [x] Orphan files: index attachment files and `EFMData` bodies in `Files/` that no record references, `search_files`, validate counts
+- [ ] Check orphan indexing and body matching on the real `Files/` folder (run `new-outlook validate`)
 - [x] Calendar records (see Phase 4); recurrence beyond weekly still open
 - [x] `new-outlook experiment start/finish`: snapshot pair with a structural diff report
 - [ ] Differential experiments run on the real Mac to confirm field encodings
@@ -42,11 +44,12 @@ Ground rules for every phase:
 **Done when:** the `hxstore` importer extracts every message in the last ~180 days with correct metadata and bodies, and the counts match what Outlook shows per folder.
 
 ## Phase 3: Continuous sync
-- launchd agent every ~36 h + `sync_now` tool
-- Archive only grows. Mail older than New Outlook's window is retained.
-- Drift detection: notify if an import returns zero or far fewer records than expected (Outlook update changed the format)
-- Cross-source dedup (legacy ↔ hxstore overlap Apr–Oct 2026)
-- **Privacy scopes** (before the archive grows): config-defined exclusions (folders, senders, keywords) that are never indexed or returned. Needed for GDPR-sensitive mail such as grades, hiring and HR.
+- [x] launchd agent every ~36 h + `sync_now` tool (now the fallback)
+- [x] Near-live sync: `new-outlook watch` (watchdog or polling, debounce, rate limit, backoff) with its own LaunchAgent, heartbeat file and `sync_health` in `archive_status`
+- [x] Archive only grows (except `purge-excluded`). Mail older than New Outlook's window is retained.
+- [x] Drift detection: notify if an import returns zero or far fewer records than expected (Outlook update changed the format)
+- [x] Cross-source dedup (legacy ↔ hxstore overlap Apr–Oct 2026)
+- [x] **Privacy scopes**: config-defined exclusions (accounts, folders, senders, domains, subject keywords, attachment names, recipients) that are never stored and never returned by any tool, plus `purge-excluded` for mail imported earlier. Needed for GDPR-sensitive mail such as grades, hiring and HR.
 
 **Done when:** new mail shows up in the archive without manual steps, an Outlook update that breaks parsing triggers a notification, and excluded mail is not retrievable through any tool.
 

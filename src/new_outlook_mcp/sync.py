@@ -7,7 +7,7 @@ import shutil
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from . import paths
+from . import paths, privacy
 from .calendar_store import rebuild_instances, upsert_event
 from .db import Archive
 from .importers import make_importer
@@ -30,6 +30,8 @@ class SyncResult:
     events_inserted: int = 0
     events_removed: int = 0
     instances: int = 0
+    excluded: int = 0  # messages dropped by privacy rules (counts only, never what matched)
+    events_excluded: int = 0
     details: dict = field(default_factory=dict)
     message: str = ""
     snapshot_dir: str | None = None
@@ -51,6 +53,7 @@ def run_import(
     keep_snapshot: bool = False,
     full: bool = False,
     raw_max_bytes: int = 5_000_000,
+    rules: privacy.Rules | None = None,
 ) -> SyncResult:
     name = importer.name
     if not importer.available():
@@ -62,9 +65,14 @@ def run_import(
     previous = archive.last_successful_run(name)
     importer.bind(archive)
     try:
+        # A bad [exclude] table raises here, so nothing is imported when the rules cannot be read.
+        rules = privacy.load_rules() if rules is None else rules
         snap = importer.snapshot(snap_dir)
         skip = set() if (full or not importer.incremental) else archive.known_source_keys(name)
         for rec in importer.iter_records(snap, skip_keys=skip):
+            if privacy.excludes_message(rec, rules):
+                res.excluded += 1
+                continue
             try:
                 with archive.transaction():
                     out = archive.upsert(rec, raw_max_bytes=raw_max_bytes)
@@ -79,9 +87,19 @@ def run_import(
         res.seen = importer.stats.seen
         res.skipped = importer.stats.skipped
 
+        try:
+            importer.finish_files(archive)
+        except Exception as exc:  # the Files/ index is an extra: it must not fail the mail import
+            log.warning("%s: indexing Files/ failed: %s", name, exc)
+            importer.stats.warnings.append(f"indexing the Files/ cache failed: {type(exc).__name__}")
+
         seen_events: set[str] = set()
         for ev in importer.iter_events(snap):
             res.events_seen += 1
+            if privacy.excludes_event(ev, rules):
+                # Not marked as seen, so a feed or store prunes an older copy of it.
+                res.events_excluded += 1
+                continue
             seen_events.add(ev.source_key)
             try:
                 with archive.transaction():
@@ -99,6 +117,9 @@ def run_import(
 
         res.errors += importer.stats.errors
         res.details = dict(importer.details)
+        if res.excluded or res.events_excluded:
+            res.details["excluded"] = res.excluded
+            res.details["events_excluded"] = res.events_excluded
         notes = importer.stats.notes()
         if importer.expect_records and res.seen == 0:
             res.status = "warning"
@@ -134,11 +155,12 @@ def sync(
     *,
     source_paths: dict[str, Path] | None = None,
     embed: bool = True,
+    source_options: dict[str, dict] | None = None,
     **kwargs,
 ) -> list[SyncResult]:
     results = []
     for name in sources:
-        importer = make_importer(name, (source_paths or {}).get(name))
+        importer = make_importer(name, (source_paths or {}).get(name), **(source_options or {}).get(name, {}))
         res = run_import(archive, importer, **kwargs)
         if embed and res.inserted:
             _embed_new_mail(archive, res)

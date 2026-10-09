@@ -390,3 +390,20 @@ def test_real_model_english_czech(monkeypatch):
     docs = e.embed_passages(["Návrh na přeformulování článku o hype", "Lunch menu for Thursday"])
     q = e.embed_query("suggestion to reframe the hype paper")
     assert float(docs[0] @ q) > float(docs[1] @ q)
+
+
+def test_real_privacy_rules_hide_semantic_results(archive, corpus, backend):
+    """The default filter is the configured privacy scopes, not allow-all."""
+    rules = privacy.Rules()
+    rules.add("senders", ["alice@example.org"])
+    privacy.save_rules(rules)
+    try:
+        for mode in ("semantic", "hybrid"):
+            res = semantic.semantic_search(archive, "reframing the hype paper", mode=mode)
+            assert corpus["hype"] not in {r["id"] for r in res["results"]}, mode
+        sim = semantic.find_similar(archive, email_id=str(corpus["budget"]))
+        assert corpus["hype"] not in {r["id"] for r in sim["results"]}
+        with pytest.raises(tools.ToolInputError):
+            semantic.find_similar(archive, email_id=str(corpus["hype"]))
+    finally:
+        privacy.save_rules(privacy.Rules())

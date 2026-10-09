@@ -10,15 +10,16 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import os
-import stat
-import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import __version__, paths
+from . import __version__
+from .config import config_path, load_config, save_config
+
+__all__ = ["Feed", "FeedConfigError", "config_path", "load_config", "load_feeds", "my_addresses", "save_feeds",
+           "redact", "fetch", "FetchResult"]
 
 log = logging.getLogger(__name__)
 
@@ -40,26 +41,6 @@ class FeedConfigError(RuntimeError):
     pass
 
 
-def config_path() -> Path:
-    return paths.app_dir() / "config.toml"
-
-
-def _ensure_private(p: Path) -> None:
-    mode = stat.S_IMODE(p.stat().st_mode)
-    if mode & 0o077:
-        log.warning("config file %s had permissions %o; tightening to 600", p, mode)
-        os.chmod(p, 0o600)
-
-
-def load_config() -> dict:
-    p = config_path()
-    if not p.exists():
-        return {}
-    _ensure_private(p)
-    with open(p, "rb") as fh:
-        return tomllib.load(fh)
-
-
 def load_feeds() -> list[Feed]:
     cfg = load_config()
     feeds = []
@@ -77,28 +58,19 @@ def my_addresses() -> set[str]:
     return {str(a).lower() for a in load_config().get("my_addresses", [])}
 
 
-def _toml_str(s: str) -> str:
-    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
 def save_feeds(feeds: list[Feed], *, extra: dict | None = None) -> Path:
-    """Rewrite the config file (feeds + my_addresses) with 0600 permissions."""
+    """Rewrite the config file (feeds + my_addresses), keeping every other section."""
     cfg = load_config()
     addrs = (extra or {}).get("my_addresses", cfg.get("my_addresses", []))
-    lines = ["# new-outlook-mcp configuration. Contains secret calendar URLs: keep private (chmod 600).", ""]
     if addrs:
-        lines.append("my_addresses = [" + ", ".join(_toml_str(a) for a in addrs) + "]")
-        lines.append("")
-    for f in feeds:
-        lines += ["[[ics_feed]]", f"name = {_toml_str(f.name)}", f"url = {_toml_str(f.url)}", ""]
-    p = config_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(p.with_suffix(".tmp"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write("\n".join(lines))
-    os.chmod(p.with_suffix(".tmp"), 0o600)
-    os.replace(p.with_suffix(".tmp"), p)
-    return p
+        cfg["my_addresses"] = list(addrs)
+    else:
+        cfg.pop("my_addresses", None)
+    if feeds:
+        cfg["ics_feed"] = [{"name": f.name, "url": f.url} for f in feeds]
+    else:
+        cfg.pop("ics_feed", None)
+    return save_config(cfg)
 
 
 def redact(text: str, feeds: list[Feed]) -> str:

@@ -275,8 +275,12 @@ class ObjectStats:
     layout_mismatch: collections.Counter
 
 
-def iter_objects(d, block_stats: BlockStats, classes: set[int] | None, obj_stats: ObjectStats) -> Iterator[Obj]:
-    """Objects in all valid blocks. `classes=None` yields every class."""
+def iter_objects(d, block_stats: BlockStats, classes: set[int] | None, obj_stats: ObjectStats, *,
+                 check_layout: bool = True) -> Iterator[Obj]:
+    """Objects in all valid blocks. `classes=None` yields every class.
+
+    With `check_layout`, objects of a known class with an unverified size are counted and skipped.
+    """
     for block, x in iter_payloads(d, block_stats):
         for m in _ENVELOPE.finditer(x):
             fs, length = struct.unpack("<HI", m.group(1) + m.group(2))
@@ -293,7 +297,8 @@ def iter_objects(d, block_stats: BlockStats, classes: set[int] | None, obj_stats
             want = EXPECTED_FS.get(cls)
             if want is not None and fs != want:
                 obj_stats.layout_mismatch[(cls, fs)] += 1
-                continue
+                if check_layout:
+                    continue
             obj_stats.by_class[cls] += 1
             stamp, = struct.unpack_from("<Q", x, p + 0x70)
             yield Obj(cls, oid, kind, owner, fs, lead, stamp, bytes(x[p:p + length]), block)
@@ -636,7 +641,7 @@ def scan_newest(path: Path, *, with_header: bool = True) -> tuple[dict[tuple[int
     try:
         if with_header:
             check_header(d)
-        for ob in iter_objects(d, blocks, None, objs):
+        for ob in iter_objects(d, blocks, None, objs, check_layout=False):
             key = (ob.cls, ob.id)
             cur = newest.get(key)
             if cur is None or (ob.stamp, ob.block) > (cur.stamp, cur.block):

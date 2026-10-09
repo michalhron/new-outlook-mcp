@@ -1,4 +1,4 @@
-# outlook-archive-mcp
+# new-outlook-mcp
 
 A local, read-only MCP server that gives Claude access to your Outlook for Mac email without any online API.
 
@@ -26,20 +26,20 @@ pipx install git+https://github.com/michalhron/new-outlook-mcp.git
 pipx install .
 ```
 
-This installs two commands: `outlook-archive` (CLI) and `outlook-archive-mcp` (the MCP server on stdio).
+This installs two commands: `new-outlook` (CLI) and `new-outlook-mcp` (the MCP server on stdio).
 
 ### macOS privacy permission
 
-Outlook's files live in `~/Library/Group Containers/UBF8T346G9.Office/`. Recent macOS versions ask before one app reads another app's container. The first `sync` from Terminal may show a prompt. For the scheduled job, give the Python binary that pipx uses (shown by `pipx environment` or `head -1 $(which outlook-archive)`) Full Disk Access in System Settings › Privacy & Security, or the job fails with "Operation not permitted".
+Outlook's files live in `~/Library/Group Containers/UBF8T346G9.Office/`. Recent macOS versions ask before one app reads another app's container. The first `sync` from Terminal may show a prompt. For the scheduled job, give the Python binary that pipx uses (shown by `pipx environment` or `head -1 $(which new-outlook)`) Full Disk Access in System Settings › Privacy & Security, or the job fails with "Operation not permitted".
 
 ## First run: back up the legacy archive
 
 The legacy archive is frozen and will not come back if Outlook deletes it. Make one safe copy first, then import from that copy.
 
 ```sh
-outlook-archive backup-legacy ~/Documents/Outlook-legacy-backup
-outlook-archive sync --source legacy --legacy-dir ~/Documents/Outlook-legacy-backup
-outlook-archive status
+new-outlook backup-legacy ~/Documents/Outlook-legacy-backup
+new-outlook sync --source legacy --legacy-dir ~/Documents/Outlook-legacy-backup
+new-outlook status
 ```
 
 `backup-legacy` copies the whole `Data` folder (about 3.3 GB) and refuses to overwrite a non-empty destination. The import of about 9,000 messages takes a few minutes. Run `sync --source legacy` again at any time: it skips records it has already imported.
@@ -47,19 +47,19 @@ outlook-archive status
 Then import New Outlook's cache:
 
 ```sh
-outlook-archive sync --source hxstore
+new-outlook sync --source hxstore
 ```
 
 ## Connect to Claude Code
 
 ```sh
-claude mcp add outlook-archive -- outlook-archive-mcp
+claude mcp add new-outlook -- new-outlook-mcp
 ```
 
 With a non-default archive location:
 
 ```sh
-claude mcp add outlook-archive -e OUTLOOK_ARCHIVE_DB=/path/to/archive.db -- outlook-archive-mcp
+claude mcp add new-outlook -e NEW_OUTLOOK_DB=/path/to/archive.db -- new-outlook-mcp
 ```
 
 For Claude Desktop, add to `claude_desktop_config.json`:
@@ -67,7 +67,7 @@ For Claude Desktop, add to `claude_desktop_config.json`:
 ```json
 {
   "mcpServers": {
-    "outlook-archive": { "command": "/Users/YOU/.local/bin/outlook-archive-mcp" }
+    "new-outlook": { "command": "/Users/YOU/.local/bin/new-outlook-mcp" }
   }
 }
 ```
@@ -107,13 +107,13 @@ Calendar sources, merged by iCalendar UID:
 
 1. **Legacy archive**: `CalendarEvents` in `Outlook.sqlite` plus the `.olk15Event` files in `Data/Events`. Frozen on 8 Oct 2026, but it includes future events booked before then. An event known only from this source is marked as possibly outdated.
 2. **HxStore**: New Outlook's cached events (see below).
-3. **Published ICS feeds (optional)**: from OWA, Settings › Calendar › Shared calendars › Publish a calendar. The link gives read access to anyone who has it, so it is stored only in `~/Library/Application Support/outlook-archive-mcp/config.toml` with mode 600. It never appears in the archive, logs or tool output.
+3. **Published ICS feeds (optional)**: from OWA, Settings › Calendar › Shared calendars › Publish a calendar. The link gives read access to anyone who has it, so it is stored only in `~/Library/Application Support/new-outlook-mcp/config.toml` with mode 600. It never appears in the archive, logs or tool output.
 
    ```sh
-   outlook-archive calendar add-feed work                     # paste the ICS link at the hidden prompt
-   outlook-archive calendar set-my-addresses me@uni.example   # to recognise your own responses
-   outlook-archive sync --source ics
-   outlook-archive calendar list-feeds                        # shows names only
+   new-outlook calendar add-feed work                     # paste the ICS link at the hidden prompt
+   new-outlook calendar set-my-addresses me@uni.example   # to recognise your own responses
+   new-outlook sync --source ics
+   new-outlook calendar list-feeds                        # shows names only
    ```
 
    Feeds are fetched with ETag/If-Modified-Since caching. When a feed changes, events it no longer lists are removed, unless another source still has them. This is the only network access in the project, and only to URLs you added.
@@ -129,34 +129,34 @@ These need Exchange or Graph and are out of scope: accepting or declining invita
 New Outlook keeps only about 180 days. A LaunchAgent that imports the cache every 36 hours keeps the archive complete. It is not installed automatically.
 
 ```sh
-outlook-archive launchd print       # show the plist
-outlook-archive launchd install     # write ~/Library/LaunchAgents/local.outlook-archive-mcp.sync.plist and load it
-outlook-archive launchd uninstall
+new-outlook launchd print       # show the plist
+new-outlook launchd install     # write ~/Library/LaunchAgents/com.michalhron.new-outlook-mcp.plist and load it
+new-outlook launchd uninstall
 ```
 
-Options: `--interval-hours 36`, `--source` with one source or a comma list (default `hxstore,ics`). Logs go to `~/Library/Logs/outlook-archive-mcp/sync.log`.
+Options: `--interval-hours 36`, `--source` with one source or a comma list (default `hxstore,ics`). Logs go to `~/Library/Logs/new-outlook-mcp/sync.log`.
 
-The job runs `outlook-archive sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when it meets objects with an unknown layout. That second case usually means Outlook changed its file format.
+The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when it meets objects with an unknown layout. That second case usually means Outlook changed its file format.
 
 ## How it stays read-only
 
-- Every import starts with a snapshot: Outlook's database files are copied to a private, timestamped folder under `~/Library/Application Support/outlook-archive-mcp/snapshots/`. A copy that changes while it is being copied is retried. Parsers read only the copy, and SQLite copies are opened with `mode=ro&immutable=1` after the WAL has been folded into the copy.
+- Every import starts with a snapshot: Outlook's database files are copied to a private, timestamped folder under `~/Library/Application Support/new-outlook-mcp/snapshots/`. A copy that changes while it is being copied is retried. Parsers read only the copy, and SQLite copies are opened with `mode=ro&immutable=1` after the WAL has been folded into the copy.
 - Legacy message, source and attachment files are write-once files. They are read in place, read-only, or from your `backup-legacy` copy.
-- Attachments stored inside MIME are decoded into `~/Library/Application Support/outlook-archive-mcp/attachments/`, never next to Outlook's files.
+- Attachments stored inside MIME are decoded into `~/Library/Application Support/new-outlook-mcp/attachments/`, never next to Outlook's files.
 - `create_draft` only runs `open mailto:...`.
 
-The snapshot is deleted after a successful import. Keep it with `--keep-snapshot`, or take one by hand with `outlook-archive snapshot`.
+The snapshot is deleted after a successful import. Keep it with `--keep-snapshot`, or take one by hand with `new-outlook snapshot`.
 
 ## Configuration
 
 | Variable | Default |
 |---|---|
-| `OUTLOOK_ARCHIVE_DB` | `~/Library/Application Support/outlook-archive-mcp/archive.db` |
-| `OUTLOOK_ARCHIVE_HOME` | `~/Library/Application Support/outlook-archive-mcp` |
+| `NEW_OUTLOOK_DB` | `~/Library/Application Support/new-outlook-mcp/archive.db` |
+| `NEW_OUTLOOK_HOME` | `~/Library/Application Support/new-outlook-mcp` |
 | `OUTLOOK_PROFILE_DIR` | `~/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile` |
 | `OUTLOOK_LEGACY_DATA_DIR` | `$OUTLOOK_PROFILE_DIR/Data` |
 | `OUTLOOK_HXSTORE_PATH` | `$OUTLOOK_PROFILE_DIR/HxStore.hxd` |
-| `OUTLOOK_ARCHIVE_LOG_DIR` | `~/Library/Logs/outlook-archive-mcp` |
+| `NEW_OUTLOOK_LOG_DIR` | `~/Library/Logs/new-outlook-mcp` |
 
 ## Archive layout
 
@@ -193,12 +193,12 @@ No official schema exists. The legacy importer rests on two open-source parsers,
 Run these on your Mac after the first import. None of them change Outlook's files.
 
 1. `sqlite3 "file:$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile/Data/Outlook.sqlite?mode=ro" "PRAGMA table_info(Mail);"` Check that the columns in the table above exist.
-2. `outlook-archive status` should show about 9,000 legacy messages from Sep 2023 to 8 Oct 2026. A much lower count points to a schema difference. Run `outlook-archive -v sync --source legacy --full` and read the warnings.
+2. `new-outlook status` should show about 9,000 legacy messages from Sep 2023 to 8 Oct 2026. A much lower count points to a schema difference. Run `new-outlook -v sync --source legacy --full` and read the warnings.
 3. Pick five messages you know well (one with attachments, one HTML newsletter, one reply in a long thread, one sent message, one with non-ASCII text). Compare `get_email` output with what Outlook showed: date and time zone, sender, recipients, body.
 4. Check dates: the newest legacy message should be from 8 Oct 2026. If dates are off by 31 years, the time columns use the Cocoa epoch.
 5. Check folders with `list_folders`. Folder paths should match the folder tree you remember. Note any folder named `folder-<n>`.
 6. Check accounts. If you see `account-<n>`, run `SELECT * FROM AccountsExchange` and `SELECT * FROM AccountsMail` on the copy and tell me which column matches `Mail.Record_AccountUID`.
-7. Check how many messages have a full source: `sqlite3 ~/Library/Application\ Support/outlook-archive-mcp/archive.db "SELECT COUNT(*) FROM messages WHERE raw_source_z IS NOT NULL"`.
+7. Check how many messages have a full source: `sqlite3 ~/Library/Application\ Support/new-outlook-mcp/archive.db "SELECT COUNT(*) FROM messages WHERE raw_source_z IS NOT NULL"`.
 8. Attachments: for a message with attachments, `list_attachments` should show names and sizes, and `get_attachment` should return text for a PDF.
 9. Threads: run `get_thread` on a reply and check that it finds the earlier messages.
 10. Calendar: ask for next week's events and compare with Outlook. Check one recurring meeting across a daylight-saving change, one all-day event, and one meeting you declined (it should not count as busy). If legacy event times are off by a fixed number of hours, tell me: the importer assumes `Calendar_StartDateUTC` is minutes since 1601 in UTC.

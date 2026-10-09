@@ -35,7 +35,7 @@ and sends or saves themselves.
 
 def build_server(db_path: Path | None = None) -> MCPServer:
     db_path = Path(db_path or paths.db_path())
-    server = MCPServer("outlook-archive", instructions=INSTRUCTIONS, version=__version__)
+    server = MCPServer("new-outlook", instructions=INSTRUCTIONS, version=__version__)
     state: dict[str, Archive] = {}
 
     def archive() -> Archive:
@@ -256,7 +256,7 @@ def build_server(db_path: Path | None = None) -> MCPServer:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="outlook-archive-mcp", description="Run the MCP server on stdio.")
+    parser = argparse.ArgumentParser(prog="new-outlook-mcp", description="Run the MCP server on stdio.")
     parser.add_argument("--db", type=Path, help=f"archive database (default: {paths.db_path()})")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)

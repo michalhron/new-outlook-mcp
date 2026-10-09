@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import plistlib
 
-from outlook_archive_mcp import cli, launchd
+from new_outlook_mcp import cli, launchd
 
 
 def test_sync_and_status(legacy_data, tmp_path, capsys):
@@ -36,21 +36,21 @@ def test_snapshot_command(legacy_data, tmp_path, capsys):
 
 
 def test_launchd_plist():
-    pl = plistlib.loads(launchd.render(interval_hours=36, source="hxstore", program=["/opt/bin/outlook-archive"]))
+    pl = plistlib.loads(launchd.render(interval_hours=36, source="hxstore", program=["/opt/bin/new-outlook"]))
     assert pl["Label"] == launchd.LABEL
     assert pl["StartInterval"] == 36 * 3600
-    assert pl["ProgramArguments"] == ["/opt/bin/outlook-archive", "sync", "--source", "hxstore", "--notify"]
+    assert pl["ProgramArguments"] == ["/opt/bin/new-outlook", "sync", "--source", "hxstore", "--notify"]
     assert pl["StandardOutPath"].endswith("sync.log")
 
 
 def test_launchd_install_writes_plist_without_loading(tmp_path):
-    p = launchd.install(load=False, program=["/opt/bin/outlook-archive"])
+    p = launchd.install(load=False, program=["/opt/bin/new-outlook"])
     assert p.exists() and str(p).startswith(str(tmp_path))
     assert launchd.uninstall() and not p.exists()
 
 
 def test_notify_is_noop_off_macos(monkeypatch):
-    from outlook_archive_mcp import notify
+    from new_outlook_mcp import notify
 
     monkeypatch.setattr(notify.sys, "platform", "linux")
     assert notify.notify("t", "m") is False

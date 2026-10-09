@@ -85,7 +85,7 @@ def save_feeds(feeds: list[Feed], *, extra: dict | None = None) -> Path:
     """Rewrite the config file (feeds + my_addresses) with 0600 permissions."""
     cfg = load_config()
     addrs = (extra or {}).get("my_addresses", cfg.get("my_addresses", []))
-    lines = ["# outlook-archive-mcp configuration. Contains secret calendar URLs: keep private (chmod 600).", ""]
+    lines = ["# new-outlook-mcp configuration. Contains secret calendar URLs: keep private (chmod 600).", ""]
     if addrs:
         lines.append("my_addresses = [" + ", ".join(_toml_str(a) for a in addrs) + "]")
         lines.append("")
@@ -117,7 +117,7 @@ class FetchResult:
 
 
 def fetch(feed: Feed, *, etag: str | None = None, last_modified: str | None = None, opener=None) -> FetchResult:
-    req = urllib.request.Request(feed.url, headers={"User-Agent": f"outlook-archive-mcp/{__version__}",
+    req = urllib.request.Request(feed.url, headers={"User-Agent": f"new-outlook-mcp/{__version__}",
                                                     "Accept": "text/calendar, */*;q=0.5"})
     if etag:
         req.add_header("If-None-Match", etag)

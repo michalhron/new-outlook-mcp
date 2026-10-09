@@ -5,10 +5,10 @@ from pathlib import Path
 import pytest
 from hxsynth import ME, ObjSpec, mailbox, write_store
 
-from outlook_archive_mcp import caltools, tools
-from outlook_archive_mcp.importers import hxformat
-from outlook_archive_mcp.importers.hxstore import HxStoreImporter
-from outlook_archive_mcp.sync import run_import
+from new_outlook_mcp import caltools, tools
+from new_outlook_mcp.importers import hxformat
+from new_outlook_mcp.importers.hxstore import HxStoreImporter
+from new_outlook_mcp.sync import run_import
 
 
 @pytest.fixture

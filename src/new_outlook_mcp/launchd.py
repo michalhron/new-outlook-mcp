@@ -11,7 +11,7 @@ from pathlib import Path
 
 from . import paths
 
-LABEL = "local.outlook-archive-mcp.sync"
+LABEL = "com.michalhron.new-outlook-mcp"
 DEFAULT_INTERVAL_HOURS = 36
 
 
@@ -21,18 +21,18 @@ def plist_path() -> Path:
 
 def cli_executable() -> list[str]:
     """Command that runs our CLI, preferring the installed console script."""
-    exe = shutil.which("outlook-archive")
+    exe = shutil.which("new-outlook")
     if exe:
         return [str(Path(exe).resolve())]
-    return [sys.executable, "-m", "outlook_archive_mcp.cli"]
+    return [sys.executable, "-m", "new_outlook_mcp.cli"]
 
 
 def build_plist(*, interval_hours: float = DEFAULT_INTERVAL_HOURS, source: str = "hxstore,ics",
                 program: list[str] | None = None) -> dict:
     logs = paths.log_dir()
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
-    for var in ("OUTLOOK_ARCHIVE_DB", "OUTLOOK_ARCHIVE_HOME", "OUTLOOK_PROFILE_DIR",
-                "OUTLOOK_LEGACY_DATA_DIR", "OUTLOOK_HXSTORE_PATH", "OUTLOOK_ARCHIVE_LOG_DIR"):
+    for var in ("NEW_OUTLOOK_DB", "NEW_OUTLOOK_HOME", "OUTLOOK_PROFILE_DIR",
+                "OUTLOOK_LEGACY_DATA_DIR", "OUTLOOK_HXSTORE_PATH", "NEW_OUTLOOK_LOG_DIR"):
         if os.environ.get(var):
             env[var] = os.environ[var]
     return {

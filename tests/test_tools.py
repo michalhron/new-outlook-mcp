@@ -4,9 +4,9 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
 
-from outlook_archive_mcp import tools
-from outlook_archive_mcp.db import normalize_subject
-from outlook_archive_mcp.model import MessageRecord
+from new_outlook_mcp import tools
+from new_outlook_mcp.db import normalize_subject
+from new_outlook_mcp.model import MessageRecord
 
 
 def test_search_fts_and_snippet(loaded):

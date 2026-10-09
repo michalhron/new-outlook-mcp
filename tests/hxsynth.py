@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from outlook_archive_mcp.importers import hxformat as hx
+from new_outlook_mcp.importers import hxformat as hx
 
 TICKS_PER_SEC = 10_000_000
 

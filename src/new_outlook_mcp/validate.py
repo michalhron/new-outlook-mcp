@@ -61,7 +61,8 @@ class Labels:
             parts = name.split("/")
             out = []
             for i, p in enumerate(parts):
-                if p.lower() in WELL_KNOWN or re.fullmatch(r"(folder|account)-\d+", p):
+                if p.lower() in WELL_KNOWN or re.fullmatch(r"(folder|account)-\d+|on my computer|other store( \d+)?",
+                                                          p, re.IGNORECASE):
                     out.append(p)
                     continue
                 prefix = "/".join(parts[:i + 1])

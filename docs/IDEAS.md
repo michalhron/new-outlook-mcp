@@ -4,6 +4,8 @@ Possible directions. These are **not committed**. The committed plan is [ROADMAP
 
 Rough priority marker: ★ = most interesting to me.
 
+Notes from the 2026-10-09 session (small next steps, measured search quality, and the plan to grow this into a general personal index for mail, notes and files) are in [next-steps-and-personal-index.md](next-steps-and-personal-index.md).
+
 ## ★ Academic workflows
 Nothing like this was found in existing projects, so this is original territory and possibly publishable as a tool.
 - **Editorial and review tracker.** Parse automated mails from submission systems (ScholarOne, Editorial Manager, OJS, conference systems) into a table of submissions, status changes, decisions, review invitations and review deadlines. Tools: `my_submissions`, `pending_reviews`, `upcoming_deadlines`.

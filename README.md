@@ -7,7 +7,7 @@ New Outlook for Mac has no AppleScript, and the legacy client can no longer conn
 1. the frozen legacy archive (`Data/Outlook.sqlite` plus `.olk15*` files), and
 2. New Outlook's local cache (`HxStore.hxd`, about the last 180 days).
 
-It copies them into its own SQLite archive with full-text search. The MCP server queries only that archive. It never calls Graph, EWS, ActiveSync or OWA, and it never reuses Outlook's tokens.
+It copies them into its own SQLite archive with full-text search. The MCP server queries only that archive. It never calls Graph, EWS, ActiveSync or OWA, and it never reuses Outlook's tokens. The one optional network access is fetching calendar feeds you published yourself (see Calendar).
 
 ## What it can and cannot do
 
@@ -89,6 +89,41 @@ For Claude Desktop, add to `claude_desktop_config.json`:
 
 Bodies are returned as plain text with HTML stripped. Set New Outlook as the default mail app (Outlook › Settings › General) so `create_draft` opens there.
 
+### Calendar tools
+
+| Tool | What it does |
+|---|---|
+| `list_calendar_events` | Occurrences between `start` and `end`, with recurring series expanded. Filters: `calendar`, `account`. |
+| `get_calendar_event` | Times, timezone, location, meeting link, organizer, attendees and their responses, my response, recurrence, body, and which sources know the event. |
+| `search_calendar` | Full-text search over subject, location, people and body, with an optional date range. |
+| `calendar_freebusy` | My busy blocks and the free time inside `working_hours` (default `09:00-17:00`, `MO-FR`). Cancelled, declined and "free" events do not count. |
+| `find_free_slots` | Free slots of `duration_minutes` in my own calendar. |
+| `meeting_prep` | The event, its attendees, and recent email threads with those people or on that subject. |
+| `create_event_draft` | Experimental. Writes an `.ics` file and opens it, so Outlook shows a new event for you to save. Nothing is added to the calendar and no invitation is sent. |
+
+Times are shown in this Mac's timezone unless a tool gets a `timezone` (IANA name). Recurring series are expanded in the zone they were scheduled in, so a 09:00 meeting stays at 09:00 across daylight-saving changes. Instances are computed up to three years ahead at each sync.
+
+Calendar sources, merged by iCalendar UID:
+
+1. **Legacy archive**: `CalendarEvents` in `Outlook.sqlite` plus the `.olk15Event` files in `Data/Events`. Frozen on 8 Oct 2026, but it includes future events booked before then. An event known only from this source is marked as possibly outdated.
+2. **HxStore**: New Outlook's cached events (see below).
+3. **Published ICS feeds (optional)**: from OWA, Settings › Calendar › Shared calendars › Publish a calendar. The link gives read access to anyone who has it, so it is stored only in `~/Library/Application Support/outlook-archive-mcp/config.toml` with mode 600. It never appears in the archive, logs or tool output.
+
+   ```sh
+   outlook-archive calendar add-feed work                     # paste the ICS link at the hidden prompt
+   outlook-archive calendar set-my-addresses me@uni.example   # to recognise your own responses
+   outlook-archive sync --source ics
+   outlook-archive calendar list-feeds                        # shows names only
+   ```
+
+   Feeds are fetched with ETag/If-Modified-Since caching. When a feed changes, events it no longer lists are removed, unless another source still has them. This is the only network access in the project, and only to URLs you added.
+
+When sources disagree, HxStore wins over the ICS feed, and both win over the frozen legacy archive.
+
+### Not possible without a server API
+
+These need Exchange or Graph and are out of scope: accepting or declining invitations, editing or deleting events, the room finder, other people's free/busy, out-of-office settings, and sending mail.
+
 ## Scheduled sync (launchd)
 
 New Outlook keeps only about 180 days. A LaunchAgent that imports the cache every 36 hours keeps the archive complete. It is not installed automatically.
@@ -99,9 +134,9 @@ outlook-archive launchd install     # write ~/Library/LaunchAgents/local.outlook
 outlook-archive launchd uninstall
 ```
 
-Options: `--interval-hours 36`, `--source hxstore|legacy|all`. Logs go to `~/Library/Logs/outlook-archive-mcp/sync.log`.
+Options: `--interval-hours 36`, `--source` with one source or a comma list (default `hxstore,ics`). Logs go to `~/Library/Logs/outlook-archive-mcp/sync.log`.
 
-The job runs `outlook-archive sync --source hxstore --notify`. It shows a macOS notification when an import fails, or when it finds zero records although earlier runs found some. That second case usually means Outlook changed its file format.
+The job runs `outlook-archive sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when it meets objects with an unknown layout. That second case usually means Outlook changed its file format.
 
 ## How it stays read-only
 
@@ -146,6 +181,12 @@ No official schema exists. The legacy importer rests on two open-source parsers,
 | `.olk15Message` property collection: subject `(0x1F, 0x01)` UTF-16LE, body `(0x1F, 0x1E)` HTML, headers `(0x1E, 0x04)` | pyolk |
 | MIME in blocks may use bare CR line endings | Seen in olk15-export's attachment fixtures. Assumed for message sources too |
 | About 7% of messages have a full `.olk15MsgSource` | One profile, olk15-export README. The importer falls back to `.olk15Message`, then to the database preview |
+| Property entry bytes: index in bytes 0-1, VARIANT type in byte 3 | Read from pyolk's key printing (`1F:01` = bytes `01 00 00 1F`) |
+| `CalendarEvents(Record_RecordID, PathToDataFile, Record_FolderID, Record_AccountUID, Calendar_StartDateUTC, Calendar_EndDateUTC, Calendar_IsRecurring, Calendar_RecurrenceID, Calendar_MasterRecordID)`; times are minutes since 1601 UTC | pyolk |
+| `.olk15Event` keys: subject `(0x1F, 0x02)`, body `(0x1F, 0x01)`, location `(0x1F, 0x04)`, UID `(0x1E, 0x04)`, join links `(0x1F, 0x09/0x0A)`, all-day `(0x0B, 0x07)`, cancelled `(0x0B, 0x14)`, busy status `(0x03, 0x1D)`, organizer `(0x0D, 0x0D)`, attendees `(0x0D, 0x0B)`, recurrence `(0x0D, 0x02)`, timezone `(0x0D, 0x09)` | pyolk |
+| Recurrence: type 0 daily (interval in minutes), 1 weekly (weekday bitmask, bit 0 = Sunday), 2 monthly (`0x08` = day), 3 nth weekday (5 = last), 5 yearly, 6 nth weekday of a month; end type 8225 by date, 8226 after count | pyolk |
+| Response 0 none, 1 accepted, 2 tentative | pyolk. 3 = declined is assumed |
+| A modified occurrence is a row with `Calendar_MasterRecordID` set; `Calendar_RecurrenceID` is its original start in minutes since 1601 | Assumed |
 
 ## Validate on real data
 
@@ -160,6 +201,8 @@ Run these on your Mac after the first import. None of them change Outlook's file
 7. Check how many messages have a full source: `sqlite3 ~/Library/Application\ Support/outlook-archive-mcp/archive.db "SELECT COUNT(*) FROM messages WHERE raw_source_z IS NOT NULL"`.
 8. Attachments: for a message with attachments, `list_attachments` should show names and sizes, and `get_attachment` should return text for a PDF.
 9. Threads: run `get_thread` on a reply and check that it finds the earlier messages.
+10. Calendar: ask for next week's events and compare with Outlook. Check one recurring meeting across a daylight-saving change, one all-day event, and one meeting you declined (it should not count as busy). If legacy event times are off by a fixed number of hours, tell me: the importer assumes `Calendar_StartDateUTC` is minutes since 1601 in UTC.
+11. HxStore: compare `list_folders` counts for Inbox and Sent Items with what New Outlook shows, and run the experiments in [docs/hxstore-notes.md](docs/hxstore-notes.md).
 
 ## HxStore (New Outlook)
 

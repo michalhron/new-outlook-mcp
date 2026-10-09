@@ -169,6 +169,10 @@ def _filename_matches(name: str | None, rules: Rules) -> bool:
     return bool(n) and any(fnmatch.fnmatchcase(n, p) for p in rules.attachment_names)
 
 
+def account_visible(name: str | None, rules: Rules) -> bool:
+    return not (name and _fold(name) in rules.accounts)
+
+
 def excludes_message(rec, rules: Rules) -> bool:
     """True if an importer record (model.MessageRecord) matches any rule."""
     if not rules.active:

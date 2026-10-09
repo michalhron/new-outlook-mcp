@@ -521,3 +521,22 @@ def test_excluded_account_hidden_from_account_overview(loaded):
         assert st["accounts"] == [] and st["counts"]["accounts"] == 0
     finally:
         privacy.save_rules(privacy.Rules())
+
+
+def test_excluded_account_without_mail_not_counted(archive):
+    from datetime import datetime, timezone
+
+    from new_outlook_mcp import tools as t
+    from new_outlook_mcp.calendar_store import EventRecord, upsert_event
+
+    with archive.transaction():
+        upsert_event(archive, EventRecord(source="ics", source_key="e1", uid="U1", subject="x",
+                                          start=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                                          end=datetime(2026, 1, 1, 1, tzinfo=timezone.utc),
+                                          calendar="Cal", account="old@uni.example"))
+    assert t.archive_status(archive)["counts"]["accounts"] == 1
+    privacy.save_rules(privacy.Rules(accounts=["old@uni.example"]))
+    try:
+        assert t.archive_status(archive)["counts"]["accounts"] == 0
+    finally:
+        privacy.save_rules(privacy.Rules())

@@ -1,6 +1,6 @@
 """Build a synthetic legacy Outlook 'Data' folder. All content is made up.
 
-The schema mirrors what pyolk and olk15-export query (see README). Only the
+The schema mirrors what pyolk and olk15-export query (see docs/legacy-notes.md). Only the
 columns this project reads are created, plus a few extras to make sure unknown
 columns are ignored.
 """

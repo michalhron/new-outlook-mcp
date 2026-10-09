@@ -1,6 +1,6 @@
 """Legacy Outlook for Mac calendar: CalendarEvents table + .olk15Event record files.
 
-Field keys follow pyolk (github.com/hshore29/pyolk): see README "Legacy schema"
+Field keys follow pyolk (github.com/hshore29/pyolk): see docs/legacy-notes.md
 for what is verified and what is assumed. Times in CalendarEvents and inside
 event files are minutes since 1601-01-01 UTC.
 """

@@ -1,2 +1,179 @@
 # outlook-archive-mcp
-Local read-only MCP server for Outlook for Mac email (legacy archive + New Outlook cache), no online API
+
+A local, read-only MCP server that gives Claude access to your Outlook for Mac email without any online API.
+
+New Outlook for Mac has no AppleScript, and the legacy client can no longer connect after the Exchange Online EWS retirement. If your organisation does not approve the Microsoft 365 connector and offers no IMAP, nothing on the server side is left. This project reads only files that Outlook already keeps on your Mac:
+
+1. the frozen legacy archive (`Data/Outlook.sqlite` plus `.olk15*` files), and
+2. New Outlook's local cache (`HxStore.hxd`, about the last 180 days).
+
+It copies them into its own SQLite archive with full-text search. The MCP server queries only that archive. It never calls Graph, EWS, ActiveSync or OWA, and it never reuses Outlook's tokens.
+
+## What it can and cannot do
+
+- Search, read and thread email from both sources, deduplicated by Internet Message-ID.
+- List attachments and read their text (PDF, Word, Excel, plain text, CSV, calendar files) when the file is on your Mac.
+- Open a prefilled draft in New Outlook via a `mailto:` link. You review and send it yourself. Nothing is ever sent automatically.
+- It cannot fetch anything that Outlook has not downloaded. If an attachment is not cached, the tool says so.
+
+## Install
+
+Requires macOS, Python 3.12 or newer, and [pipx](https://pipx.pypa.io/).
+
+```sh
+pipx install git+https://github.com/michalhron/new-outlook-mcp.git
+# or, from a checkout:
+pipx install .
+```
+
+This installs two commands: `outlook-archive` (CLI) and `outlook-archive-mcp` (the MCP server on stdio).
+
+### macOS privacy permission
+
+Outlook's files live in `~/Library/Group Containers/UBF8T346G9.Office/`. Recent macOS versions ask before one app reads another app's container. The first `sync` from Terminal may show a prompt. For the scheduled job, give the Python binary that pipx uses (shown by `pipx environment` or `head -1 $(which outlook-archive)`) Full Disk Access in System Settings › Privacy & Security, or the job fails with "Operation not permitted".
+
+## First run: back up the legacy archive
+
+The legacy archive is frozen and will not come back if Outlook deletes it. Make one safe copy first, then import from that copy.
+
+```sh
+outlook-archive backup-legacy ~/Documents/Outlook-legacy-backup
+outlook-archive sync --source legacy --legacy-dir ~/Documents/Outlook-legacy-backup
+outlook-archive status
+```
+
+`backup-legacy` copies the whole `Data` folder (about 3.3 GB) and refuses to overwrite a non-empty destination. The import of about 9,000 messages takes a few minutes. Run `sync --source legacy` again at any time: it skips records it has already imported.
+
+Then import New Outlook's cache:
+
+```sh
+outlook-archive sync --source hxstore
+```
+
+## Connect to Claude Code
+
+```sh
+claude mcp add outlook-archive -- outlook-archive-mcp
+```
+
+With a non-default archive location:
+
+```sh
+claude mcp add outlook-archive -e OUTLOOK_ARCHIVE_DB=/path/to/archive.db -- outlook-archive-mcp
+```
+
+For Claude Desktop, add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "outlook-archive": { "command": "/Users/YOU/.local/bin/outlook-archive-mcp" }
+  }
+}
+```
+
+### Tools
+
+| Tool | What it does |
+|---|---|
+| `search_emails` | Full-text query (FTS5 syntax: words, `"phrases"`, `OR`, `NOT`, `prefix*`) plus filters `sender`, `recipient`, `folder`, `account`, `date_from`, `date_to`, `has_attachment`, `attachment_name`. Paged with `limit`/`offset`. |
+| `get_email` | Metadata, attachment list and plain-text body. Long bodies are paged with `offset`. |
+| `get_thread` | The conversation around a message, via Message-ID/References/In-Reply-To, Outlook's conversation id, and a subject fallback. |
+| `list_recent` | Newest messages, optionally by folder, account or last N days. |
+| `list_folders` | Folders with counts and date ranges. |
+| `list_attachments` | Attachments of a message and whether each is on this Mac. Small inline images (signature logos) are hidden unless `include_inline=true`. |
+| `get_attachment` | `mode="text"` extracts text, `"path"` returns a local path, `"open"` opens it in its default app. |
+| `archive_status` | Message counts, date coverage per source, last sync per source. |
+| `sync_now` | Runs an import from the local files. |
+| `create_draft` | Opens a prefilled draft (to, cc, bcc, subject, body) in the default mail app. You send it. |
+
+Bodies are returned as plain text with HTML stripped. Set New Outlook as the default mail app (Outlook › Settings › General) so `create_draft` opens there.
+
+## Scheduled sync (launchd)
+
+New Outlook keeps only about 180 days. A LaunchAgent that imports the cache every 36 hours keeps the archive complete. It is not installed automatically.
+
+```sh
+outlook-archive launchd print       # show the plist
+outlook-archive launchd install     # write ~/Library/LaunchAgents/local.outlook-archive-mcp.sync.plist and load it
+outlook-archive launchd uninstall
+```
+
+Options: `--interval-hours 36`, `--source hxstore|legacy|all`. Logs go to `~/Library/Logs/outlook-archive-mcp/sync.log`.
+
+The job runs `outlook-archive sync --source hxstore --notify`. It shows a macOS notification when an import fails, or when it finds zero records although earlier runs found some. That second case usually means Outlook changed its file format.
+
+## How it stays read-only
+
+- Every import starts with a snapshot: Outlook's database files are copied to a private, timestamped folder under `~/Library/Application Support/outlook-archive-mcp/snapshots/`. A copy that changes while it is being copied is retried. Parsers read only the copy, and SQLite copies are opened with `mode=ro&immutable=1` after the WAL has been folded into the copy.
+- Legacy message, source and attachment files are write-once files. They are read in place, read-only, or from your `backup-legacy` copy.
+- Attachments stored inside MIME are decoded into `~/Library/Application Support/outlook-archive-mcp/attachments/`, never next to Outlook's files.
+- `create_draft` only runs `open mailto:...`.
+
+The snapshot is deleted after a successful import. Keep it with `--keep-snapshot`, or take one by hand with `outlook-archive snapshot`.
+
+## Configuration
+
+| Variable | Default |
+|---|---|
+| `OUTLOOK_ARCHIVE_DB` | `~/Library/Application Support/outlook-archive-mcp/archive.db` |
+| `OUTLOOK_ARCHIVE_HOME` | `~/Library/Application Support/outlook-archive-mcp` |
+| `OUTLOOK_PROFILE_DIR` | `~/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile` |
+| `OUTLOOK_LEGACY_DATA_DIR` | `$OUTLOOK_PROFILE_DIR/Data` |
+| `OUTLOOK_HXSTORE_PATH` | `$OUTLOOK_PROFILE_DIR/HxStore.hxd` |
+| `OUTLOOK_ARCHIVE_LOG_DIR` | `~/Library/Logs/outlook-archive-mcp` |
+
+## Archive layout
+
+`archive.db` holds `messages` (one row per unique message, with raw RFC 822 source zlib-compressed when available and under 5 MB), `messages_fts` (FTS5 over subject, sender, recipients, body), `message_sources` (which importer saw which message under which source key, used for incremental imports and coverage), `folders`, `accounts`, `attachments` (filename, size, content type, content-id, inline flag, source, local path or NULL) and `sync_runs`.
+
+Deduplication uses the Internet Message-ID. Without one, it uses a SHA-256 of sender address, date and subject. When two sources hold the same message, the first import wins for every field it filled, and later sources only fill gaps.
+
+## Legacy schema: verified vs assumed
+
+No official schema exists. The legacy importer rests on two open-source parsers, [pyolk](https://github.com/hshore29/pyolk) (commit 857a039) and [olk15-export](https://github.com/thomasmaerz/olk15-export) (commit 6778f92). Both were written against real profiles. Nothing below has been checked against your data yet. The tests use synthetic files built to match these descriptions.
+
+| Item | Status |
+|---|---|
+| `Mail.Record_RecordID`, `PathToDataFile` (relative to `Data/`, URL-encoded), `Record_FolderID`, `Record_AccountUID` | Used by both parsers |
+| `Message_TimeReceived` / `Message_TimeSent` are Unix seconds | pyolk. The importer also accepts Cocoa (2001) seconds when a value is below 1e9 |
+| `Message_NormalizedSubject`, `Message_SenderList`, `Message_DisplayTo`, `Message_MessageID`, `Message_ReadFlag`, `Message_HasAttachment`, `Message_Preview`, `Message_Size`, `Conversation_ConversationID` | Used by pyolk and/or olk15-export |
+| `Message_SenderAddressList`, `Message_ToRecipientAddressList`, `Message_CCRecipientAddressList` | olk15-export only. Optional: the importer checks `PRAGMA table_info` |
+| `Folders(Record_RecordID, Folder_Name, Folder_ParentID)` | pyolk |
+| `Record_AccountUID` maps to `Record_RecordID` in `AccountsExchange` / `AccountsMail` | Assumed. No source shows it. Unmatched ids appear as `account-<n>` |
+| `Mail_OwnedBlocks` ⋈ `Blocks` on `BlockID` and `BlockTag`; `BlockTag` is a big-endian FourCC (`Attc` = 1098151011, `MSrc` = 1297314403) | `Attc` value appears in olk15-export. `MSrc` value is computed by the same rule |
+| `.olk15*` files start with `D0 0D 00 00`; int32 at offset 8 is 1 (record) or 2 (block); block payload starts at byte 40 | pyolk, and hex dumps of real attachment fixtures in olk15-export |
+| `.olk15Message` property collection: subject `(0x1F, 0x01)` UTF-16LE, body `(0x1F, 0x1E)` HTML, headers `(0x1E, 0x04)` | pyolk |
+| MIME in blocks may use bare CR line endings | Seen in olk15-export's attachment fixtures. Assumed for message sources too |
+| About 7% of messages have a full `.olk15MsgSource` | One profile, olk15-export README. The importer falls back to `.olk15Message`, then to the database preview |
+
+## Validate on real data
+
+Run these on your Mac after the first import. None of them change Outlook's files.
+
+1. `sqlite3 "file:$HOME/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile/Data/Outlook.sqlite?mode=ro" "PRAGMA table_info(Mail);"` Check that the columns in the table above exist.
+2. `outlook-archive status` should show about 9,000 legacy messages from Sep 2023 to 8 Oct 2026. A much lower count points to a schema difference. Run `outlook-archive -v sync --source legacy --full` and read the warnings.
+3. Pick five messages you know well (one with attachments, one HTML newsletter, one reply in a long thread, one sent message, one with non-ASCII text). Compare `get_email` output with what Outlook showed: date and time zone, sender, recipients, body.
+4. Check dates: the newest legacy message should be from 8 Oct 2026. If dates are off by 31 years, the time columns use the Cocoa epoch.
+5. Check folders with `list_folders`. Folder paths should match the folder tree you remember. Note any folder named `folder-<n>`.
+6. Check accounts. If you see `account-<n>`, run `SELECT * FROM AccountsExchange` and `SELECT * FROM AccountsMail` on the copy and tell me which column matches `Mail.Record_AccountUID`.
+7. Check how many messages have a full source: `sqlite3 ~/Library/Application\ Support/outlook-archive-mcp/archive.db "SELECT COUNT(*) FROM messages WHERE raw_source_z IS NOT NULL"`.
+8. Attachments: for a message with attachments, `list_attachments` should show names and sizes, and `get_attachment` should return text for a PDF.
+9. Threads: run `get_thread` on a reply and check that it finds the earlier messages.
+
+## HxStore (New Outlook)
+
+See [docs/hxstore-notes.md](docs/hxstore-notes.md) for the format notes and the status of the importer.
+
+## Development
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+```
+
+All test data is synthetic. Never commit real mailbox files: `.gitignore` blocks `*.hxd`, `*.olk15*` and `Outlook.sqlite*`.
+
+## License
+
+MIT

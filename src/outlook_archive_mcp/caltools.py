@@ -256,7 +256,7 @@ def search_calendar(archive: Archive, query: str, *, date_from: str | None = Non
     except sqlite3.OperationalError:
         fb = _fts_fallback(query)
         if not fb:
-            raise ToolInputError("query has no searchable words")
+            raise ToolInputError("query has no searchable words") from None
         rows = archive.conn.execute(sql, [fb, *params, max(1, min(int(limit), 200))]).fetchall()
     now_ts = int(datetime.now(timezone.utc).timestamp())
     results = []

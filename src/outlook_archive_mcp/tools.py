@@ -186,7 +186,7 @@ def search_emails(
             # Invalid FTS5 syntax (unbalanced quotes, stray operators, "col:" prefixes ...).
             used = _fts_fallback(query)
             if not used:
-                raise ToolInputError("query has no searchable words")
+                raise ToolInputError("query has no searchable words") from None
             rows = archive.conn.execute(sql, [used, *params, limit, offset]).fetchall()
         results = [_summary(r, r["snip"]) for r in rows]
     else:

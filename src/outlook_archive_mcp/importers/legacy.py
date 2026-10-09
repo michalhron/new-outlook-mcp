@@ -31,6 +31,7 @@ from ..model import AttachmentInfo, MessageRecord
 from ..snapshot import copy_sqlite, open_sqlite_immutable
 from . import olk15
 from .base import Importer
+from .legacy_calendar import iter_legacy_events
 
 log = logging.getLogger(__name__)
 
@@ -178,6 +179,18 @@ class LegacyImporter(Importer):
                 except Exception as exc:
                     self.stats.errors += 1
                     log.warning("legacy record %s failed: %s", key, exc)
+        finally:
+            conn.close()
+
+    expect_events = True
+
+    def iter_events(self, snapshot: Path):
+        conn = open_sqlite_immutable(snapshot / DB_NAME)
+        try:
+            tables = self._tables(conn)
+            folders = self._folders(conn, tables)
+            accounts = self._accounts(conn, tables)
+            yield from iter_legacy_events(conn, self.source_path, folders, accounts, self.stats)
         finally:
             conn.close()
 

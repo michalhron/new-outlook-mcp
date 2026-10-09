@@ -1,200 +1,219 @@
-# HxStore.hxd notes
+# HxStore.hxd format notes
 
-Research date: 2026-10-09. Target: New Outlook for macOS store at
-`~/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile/HxStore.hxd`,
-with companion `hxcore.hfl`. Our sample starts with `Nostromoi`.
+New Outlook keeps its local cache in
+`~/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile/HxStore.hxd`.
+This page describes the format as decoded from one real store (New Outlook for Mac 16.113.4, about 27 MB) and what the `hxstore` importer does with it. It contains structure only. No content from the sample appears here, in the code or in the tests.
 
-## Summary
+Confidence labels:
 
-Microsoft publishes no specification for HxStore.hxd. Public knowledge comes from a few 2026 community projects, all from macOS New Outlook. The most detailed one is the ukd1 `hxstore-reverse-engineering` repo with its `SPEC.md` and the Rust tool `hxprobe`.
+- **V (verified):** a structural rule held on every object, or an independent field agreed (for example a CRC, or a folder id that matches another object).
+- **C (correlated):** a strong statistical match on this sample.
+- **I (inferred):** plausible, not confirmed.
 
-The sources agree on the basics. The file is not encrypted. It starts with the 8-byte magic `Nostromo` followed by a version byte (`i` = 0x69 on macOS, reportedly `h` on Windows). It uses 4096-byte pages. Record payloads are raw LZ4 blocks (no frame header). Strings are mostly UTF-16LE, with email addresses in ASCII and HTML bodies in UTF-8. Timestamps are .NET ticks (100 ns since 0001-01-01), not FILETIME.
+Offsets are hexadecimal. "+x" offsets in the object sections count from the first byte of the object envelope.
 
-The store is a cache, not an archive. Most messages keep only a preview of about 255 characters. Full bodies exist for a minority of messages. Large bodies and attachments live in separate files under the profile folder. Expect gaps against any ground-truth mailbox.
+## Status
 
-Two of the sources disagree on how blocks are framed (40-byte block header with a fixed 8-byte magic, versus a 32-byte slot header in 512-byte slots). Both report LZ4 and similar size fields, so they likely describe the same structure from different angles. Our own file will settle it.
+The importer reads messages, recipients, folders, accounts, attachments (metadata plus a path to the cached file) and calendar events. On the sample it decoded 948 message objects (943 after Message-ID dedup), 731 attachment records and 197 events, with no decode errors and in about 5 seconds.
 
-## Sources found
-
-Reliability scale: High = primary technical document with byte offsets and stated verification. Medium = technical but partial, or unverified. Low = forum or vendor claim without detail.
-
-1. ukd1/hxstore-reverse-engineering (README and SPEC.md)
-   https://github.com/ukd1/hxstore-reverse-engineering
-   https://raw.githubusercontent.com/ukd1/hxstore-reverse-engineering/main/SPEC.md
-   Byte-level spec of the file header, the 40-byte block header, dual CRC-32, LZ4 payloads, `IPM.Note` anchors, .NET tick timestamps and folder objects. Ships `hxprobe` (Rust, MIT) with `blocks`, `db`, `map` and `find` commands. Reports 13,103 of 13,116 blocks verified on a 56 MB store from Outlook 16.107.1 on macOS 15. Tested on three Exchange/ActiveSync accounts. Each claim in SPEC.md is labelled Verified, From binary or Inferred.
-   Reliability: High for the container. Medium for record layout, which the author says may drift between Outlook builds. Fetched successfully.
-
-2. securized/hxstore-reverse-engineering
-   https://github.com/securized/hxstore-reverse-engineering/blob/main/README.md
-   Same project text as source 1 under a different account. It links a write-up at https://securized.dev/hxstore-reverse-engineering/ and says block header and CRC details came from `HxCore.framework`. It mentions "Windows Mail samples in the literature" with version `h` but names no paper.
-   Reliability: Medium (duplicate of source 1). README fetched. The securized.dev write-up could not be fetched (DNS failure from this sandbox).
-
-3. mitchell-johnson/hxstore-decode (README and HXSTORE.md)
-   https://github.com/mitchell-johnson/hxstore-decode
-   https://raw.githubusercontent.com/mitchell-johnson/hxstore-decode/main/HXSTORE.md
-   Python tool `hxdecode` (click, lz4, MIT). Describes 4096-byte pages split into eight 512-byte slots with 32-byte slot headers, raw LZ4 payloads after an 8-byte uncompressed record ID, and a lenient LZ4 decoder. Documents body locations, the attachments folder, and companion files including `hxcore.hfl`. Extraction is heuristic. The doc contradicts itself in places (README says Cocoa-epoch timestamps, HXSTORE.md says .NET ticks, and two sections disagree on the record format field).
-   Reliability: Medium. Fetched successfully.
-
-4. Mitchell Johnson blog, "Reverse-Engineering Outlook's Secret Database: Cracking HxStore.hxd with AI Agents"
-   https://johnson.fyi/post/reverse-engineering-outlook-hxstore
-   Narrative companion to source 3, found via search.
-   Reliability: Unknown. Could not be fetched (DNS failure from this sandbox).
-
-5. ourostack/teamscrawl PR #60 "docs: the Outlook store layout, container and event objects"
-   https://github.com/ourostack/teamscrawl/pull/60
-   Adds `docs/outlook-store.md` to a Teams-related project. Says the container follows source 1. Adds calendar event objects (class 0x6b, tag 0x455) and detail objects (class 0x6c, tag 0x348) with per-field confidence levels. Merged 2026-10-06.
-   Reliability: Medium. PR page fetched. The full field table was not in the fetched text.
-
-6. saadtahir-dev/EmailParsingKit
-   https://github.com/saadtahir-dev/EmailParsingKit
-   Swift package for forensic email parsing. Search results say it includes an Outlook (New)/Hx parser that handles LZ4 and carves `IPM.Note` records, with a synthetic Nostromo test fixture.
-   Reliability: Low to Medium. The repo page returned 404 when fetched. Details come only from the search snippet.
-
-7. PassMark OSForensics forum, "How to extract the emails from the Windows 10 Mail app"
-   https://forums.passmark.com/osforensics-osfmount-osfclone/51182-how-to-extract-the-emails-from-the-windows-10-mail-app
-   https://forums.passmark.com/osforensics-osfmount-osfclone/51182-how-to-extract-the-emails-from-the-windows-10-mail-app/page2
-   Users report HxStore.hxd in the Windows Mail package `LocalState` folder and in New Outlook on Mac and Windows. Users say the store fills on demand (search or "load more") and keeps partial bodies. A later reply (reported as July 2026) summarizes the hxprobe findings.
-   Reliability: Low (forum). Could not be fetched (proxy 403). Details come from search snippets only.
-
-8. Chivers, "Navigating the Windows Mail database", Digital Investigation (2018)
-   https://eprints.whiterose.ac.uk/133161
-   https://www.academia.edu/59242893/Navigating_the_Windows_Mail_database
-   Peer-reviewed study of the older Windows Mail store `Comms\UnistoreDB\store.vol` (ESE database with hex property tags). Not about HxStore, but relevant background for the Windows side.
-   Reliability: High for store.vol. Not fetched. Summary from search snippets.
-
-9. Binalyze AIR knowledge base, "Microsoft Mail"
-   https://kb.binalyze.com/air/features/acquisition/supported-evidence/windows-collections-detail/microsoft-mail
-   Vendor doc. Says the collector gathers Unistore databases and "HXD files from the modern Windows Mail app".
-   Reliability: Low. Could not be fetched (DNS failure). Summary from search snippet.
-
-10. Windows Forensics Cookbook (Packt, 2017), "Windows 10 Mail app"
-    https://www.oreilly.com/library/view/windows-forensics-cookbook/9781784390495/099a5ff9-dc3c-46de-b216-e1f96ef173e9.xhtml
-    Points to `%LOCALAPPDATA%\Comms\Unistore\data\...` for bodies and attachments. Predates HxStore.
-    Reliability: Low for our purpose (old Windows Mail layout). Not fetched.
-
-Searches for SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-ups on HxStore found nothing. Searches for "HxTsr" returned only a sandbox malware report on the binary, with no format notes. I found no Kaitai Struct definition.
-
-## What is known about the format
-
-Everything below comes from sources 1 and 3 unless marked. None of it is verified by us yet.
-
-### File header (page 0)
-
-| Offset | Type | Value seen | Meaning | Source |
-|---|---|---|---|---|
-| 0x00 | char[8] | `Nostromo` | Magic | 1, 3 |
-| 0x08 | u8 (source 1 says u64) | 0x69 `i` (macOS), `h` (Windows, untested) | Format version | 1, 3 |
-| 0x10 | u64 | e.g. 0x2798600 | Live or logical data size, may differ from file size | 1, 3 |
-| 0x18 | u64 | e.g. 0x5000 | Directory or region size (tentative) | 1, 3 |
-| 0x20 | u64 | e.g. 0xc5000 | Start of block area (tentative) | 1, 3 |
-| 0x38 | u64 | 0x1000 | Page size 4096 | 1, 3 |
-| 0x48 | ? | 65521 | Max pages | 3 |
-| 0x50 | u64 | 0xdeadbeef | Guard or unused pointer marker | 1, 3 |
-| 0x9c | u8[0x24] | `deadbeef` repeated | Guard pattern | 1 |
-| 0x468 | u64 | 0x2000000 | 32 MiB cap | 1 |
-
-Our file reading `Nostromoi` fits this: magic at 0x00 and version `i` at 0x08.
-
-### Block header (source 1, 40 bytes, "From binary")
-
-| Offset | Size | Field |
+| Field | Fill rate on the sample | Confidence |
 |---|---|---|
-| +0x00 | u32 | CRC-32 of block[0x04..0x20] (header CRC) |
-| +0x04 | u32 | CRC-32 of block[0x08..0x28+len] (payload CRC, starts at the magic, not the payload) |
-| +0x08 | u64 | Magic 0x5d0245643b706a05, on disk `05 6a 70 3b 64 45 02 5d` |
-| +0x10 | u32 | Type (8 and 16 seen) |
-| +0x14 | u32 | Compressed payload length |
-| +0x18 | u32 | Inflated length |
-| +0x1c | u32 | Constant 4 (compression type, 4 = LZ4 per source 3) |
-| +0x20 | u64 | Unknown, covered by header CRC |
-| +0x28 | | LZ4 payload |
+| Subject, Message-ID, received date, folder, account | 99 to 100% | V |
+| Sender address | 96% | V |
+| At least one To recipient | 89% | C |
+| Full HTML body in the store | 85%; 3% more point to an `EFMData` file; the rest have only a preview | V |
+| Has-attachment flag | set where attachment objects exist | C |
+| Event UID, start, end, timezone, calendar | 100% of non-stub events | V |
+| Event attendees | parsed for every event that has a list | V |
+| Recurrence rule | 2 real series, both weekly | I |
 
-CRC is standard zlib CRC-32. Find blocks by scanning for the 8-byte magic and subtracting 8. Reject a block unless both CRCs pass and the LZ4 output length equals the inflated length.
+## Container
 
-### Slot view (source 3)
+### File header
 
-Source 3 describes eight 512-byte slots per 4096-byte page, each with a 32-byte header: hash (8), store ID (8), type u32 (8 = data), compressed size u32, uncompressed size u32, unknown u32 (2, 4 or 6 seen). Record data begins at slot+0x20 and may span slots. The first 8 bytes are an uncompressed record ID (u64), then raw LZ4. Source 3 also lists a separate 32-byte index node header and 20-byte index entries forming a B-tree, with traversal not implemented.
+| Offset | Value | Meaning | Confidence |
+|---|---|---|---|
+| 0x00 | `Nostromo` | magic | V |
+| 0x08 | `i` (0x69) | format version. The importer refuses other versions. | V |
+| 0x38 | 0x1000 | page size | V |
+| 0x50 | 0xdeadbeef | guard, repeated around 0x9c | V |
+| 0x28, 0x2c, 0x30, 0x40 | length, counter, CRC-32, offset | descriptor of a region at 0x3000. The CRC-32 at 0x30 matches that region. | V |
+| 0x68 to 0x78 | same shape | a second descriptor whose CRC does not match: probably a stale alternate slot | I |
+| 0x10 | u64 | called "live data size" elsewhere. It is not a bound: valid blocks exist past it. | V (refuted as bound) |
 
-The "hash" and "store ID" in source 3 likely correspond to the CRC pair and the fixed magic in source 1. This is our inference, not a claim from either source.
+### Blocks
 
-### LZ4
+Blocks start on 512-byte boundaries. Find them by scanning for the 8-byte magic `05 6a 70 3b 64 45 02 5d` and stepping back 8 bytes.
 
-Raw LZ4 block format, no frame. Source 3 says `lz4.block.decompress` succeeded on only about 3% of records, and a lenient custom decoder succeeded on all. Source 1 says a strict decoder with exact output length works on 99.9% of blocks. The difference may come from where each tool starts the payload (source 3 skips an 8-byte record ID first). Plan to write a small pure-Python LZ4 block decoder anyway.
+| Offset | Type | Field |
+|---|---|---|
+| +0x00 | u32 | CRC-32 of block[0x04:0x20] |
+| +0x04 | u32 | CRC-32 of block[0x08 : header length + compressed length], so it covers the magic, the key and the payload |
+| +0x08 | 8 bytes | magic |
+| +0x10 | u32 | key length: 8 (u64 object id) or 16 (GUID-like key). Header length is 0x20 + key length. |
+| +0x14 | u32 | compressed length |
+| +0x18 | u32 | inflated length |
+| +0x1c | u32 | codec, always 4 = LZ4 |
+| +0x20 | key | 8 or 16 bytes |
 
-### Records and object types
+All V. The payload is a raw LZ4 block without a frame. A strict decoder (exact output length, all input consumed) decoded every block whose CRCs passed. Four of 5,531 blocks failed the header CRC (torn or stale) and are skipped.
 
-- Anchor: UTF-16LE `IPM.Note`. Also `IPM.Schedule.Meeting.Request` and `IPM.Appointment`. Source 1 says a property header `40 58 00 08 02 00` precedes most anchors in raw regions.
-- Metadata is a sequence of NUL-terminated UTF-16LE strings. Fixed offsets are unreliable. Sender address is the last address before the anchor, then the display name. Subject appears twice after the body preview (source 1).
-- Object envelope (source 1): `u16 5`, `u16 tag`, `u32 length` (including the envelope), `u16 0`. Folder objects use tag 0x04c2, class 0x004d. Message bodies use class 0x00ca (tag 0x0740). Message metadata uses class 0x00bf (tag 0x02c8).
-- Source 3 lists an ObjectType u16 at offset 44 in 0x10013 records: 0xBF email, 0x4D folder, 0xE0 contact, 0x68 calendar, 0x120 search. These class values match source 1.
-- Calendar (source 5): event class 0x6b tag 0x455, detail class 0x6c tag 0x348.
-- Source 1 says identity is sender plus send time. Message-ID can repeat across a conversation. Merge revisions of the same message field by field.
-- Source 1 found no stored RFC822 headers. Do not count on finding raw `Message-ID:` header lines.
+This corrects the public spec, which assumes a fixed 40-byte header. That assumption breaks every 16-byte-key block.
 
-### Timestamps
+Most objects exist in several copies (older versions in other blocks). The importer takes the copy with the highest change stamp and fills missing fields from older copies.
 
-.NET ticks, int64 little endian, 100 ns units since 0001-01-01 UTC. `unix = (ticks - 621355968000000000) / 10**7`. Source 1 says the send time is the earliest tick in a record. Source 3 describes a 48-byte block: +0x00 sync time, +0x08 sentinel `FF 3F 37 F4 75 28 CA 2B`, +0x10 display (send) time, then more sentinels. The source 3 README mentions Cocoa-epoch values, which conflicts with its own HXSTORE.md. Test all three encodings (ticks, FILETIME, Cocoa) on our file.
+## Objects
 
-### Bodies, attachments and companion files (macOS)
+Inside an inflated payload each object is preceded by a u32 length and often followed by the trailer `00 00 00 00 00 01 00 00 00 00 01`.
 
-- About 89% of records hold only a UTF-16LE preview of about 255 characters (source 1). Source 1 reports full HTML for 23.5% of messages. Source 3 reports resolving bodies for 59%.
-- HTML bodies are UTF-8. They start at `<html`, `<!DOCTYPE`, `<body`, `<div` or `<table`, and end at `</body>` or `</html>` (source 1).
-- Large HTML bodies: `Files/S0/3/EFMData/N.dat`, gzip-compressed (source 3).
-- Attachments: `Files/S0/3/Attachments/0/<filename>[<id>].<ext>`, not inside HxStore.hxd (source 3).
-- `hxcore.hfl`: starts `08 00 00 00 00 00 01 00`, described as a binary log of about 50 MB (source 3). No source decodes it.
-- Other files: `HxStore.lock` (held while Outlook runs), `ExternalCounters.ctr`, and the legacy `Outlook.sqlite` (source 3).
+| Offset | Type | Field | Confidence |
+|---|---|---|---|
+| +0x00 | u16 | 5 | V |
+| +0x02 | u16 | fixed-region size (fs). Fixed per class and per Outlook build, so it works as a layout version check. | V |
+| +0x04 | u32 | total object length | V |
+| +0x0a | u16 | class | V |
+| +0x14 | u64 | object id | V |
+| +0x1c | u32 | parent property (which collection of the parent this object belongs to) | V |
+| +0x20 | u64 | parent id | V |
+| +0x28, +0x30 | u64 | id and parent id again | V |
+| +0x68 | u32 | lead: the string area starts at fs + lead. "Area one" is [fs, fs + lead). | V |
+| +0x70 | u64 | change stamp, higher means newer | V |
 
-### Windows
+**Field descriptors** are pairs of u32 offset and u32 byte length. If bit 31 of the length is set, the offset is relative to the string area. Otherwise it is relative to area one. Length 0 means absent. Text is UTF-16LE including a 2-byte NUL. HTML bodies are UTF-8 without a NUL.
 
-Sources 7 and 9 place HxStore.hxd in the Windows Mail app package `LocalState` folder. The usual path is under `%LOCALAPPDATA%\Packages\microsoft.windowscommunicationsapps_8wekyb3d8bbwe\LocalState\`, but no fetched source confirmed the full path. Treat it as unconfirmed. Source 2 says Windows uses version `h` and is untested. Older Windows Mail used `Comms\UnistoreDB\store.vol` (ESE) and `Comms\Unistore\data\` body files (sources 8, 10).
+**Typed references** are 46-byte records: u16 class, padding, then the referenced u64 id at +10. The object header uses the same shape for its self-reference.
 
-## Carving strategy suggestions for a first local pass
+**Timestamps** are .NET ticks in UTC: `unix = (ticks - 621355968000000000) / 10**7`. The value 0x2BCA2875F4373FFF (DateTime.MaxValue) means unset.
 
-Python, read-only, on a copy. Each step below is a hypothesis to test against our file.
+### Classes used
 
-1. Snapshot. Quit Outlook. Copy `HxStore.hxd`, `hxcore.hfl` and the `Files/` tree to a scratch directory. Record SHA-256 of each copy. Open the copy with `open(path, "rb")` or `mmap` with `ACCESS_READ`.
+| Class | fs on 16.113.4 | Meaning |
+|---|---|---|
+| 0x49 | 0x1992 | account (settings, primary SMTP address) |
+| 0x4a | 0x6ca | mail account |
+| 0x4d | 0x4c2 | folder |
+| 0x55 | 0x15e | recipient |
+| 0x68 | n/a | calendar |
+| 0x6b | 0x455 | calendar event |
+| 0x6c | 0x348 | event detail (body, join URL) |
+| 0xc9 | 0x60f | message |
+| 0xca | 0x740 | message body |
+| 0xf7 | 0xc5 | file reference |
+| 0x16a | 0x318 | attachment |
 
-2. Header check. Confirm `data[0:8] == b"Nostromo"` and `data[8] == 0x69`. Dump the u64 values at 0x10, 0x18, 0x20, 0x38, 0x48, 0x50 and compare with the table above. Stop if the page size is not 0x1000.
+The importer only parses objects whose fs matches this table. An object of a known class with a different fs is skipped and reported as possible format drift, which triggers the sync notification.
 
-3. Block scan. Search for `bytes.fromhex("056a703b6445025d")`. For each hit at `p`, set `b = p - 8`. Parse the header with `struct.unpack_from("<IIQIIII", data, b)`. Check `zlib.crc32(data[b+4:b+0x20])` and `zlib.crc32(data[b+8:b+0x28+clen])`. Count hits, CRC passes and type values. If hits are rare, fall back to the slot view and scan page by page at 512-byte steps.
+## Messages (class 0xc9)
 
-4. Decompress. Try `lz4.block.decompress(payload, uncompressed_size=ilen)`. On failure, use a lenient pure-Python decoder that stops at the input end and accepts a truncated final literal run. Also try skipping 8 bytes first (the record ID in source 3). Write each inflated block to `out/blocks/<offset>.bin` and keep an index CSV (offset, type, clen, ilen, crc_ok, decoded_ok).
+| Field | Encoding | Confidence |
+|---|---|---|
+| Stable key | 51-byte blob at descriptor +0x58c. It starts `00 09 00 2e`, and its base64url form has the shape of a Graph/REST id (`AAkALgAAAAAA…`). Unique per message on the sample. Used as the importer's source key. | V (unique); I (equals Graph ImmutableId) |
+| Subject | +0x598 | V |
+| Subject without Re:/Fw: prefix | +0x4ec | C |
+| From name, address | +0x56c, +0x574 | V |
+| Second name/address pair | +0x440, +0x448. Differs from From in about a quarter of messages: probably Sender or on-behalf-of. | I |
+| Internet Message-ID | +0x4cc, `<…@…>` form. Almost unique (5 duplicates in 948, for example a message in two folders). Used for dedup with the legacy archive. | V |
+| In-Reply-To | +0x4bc | C |
+| Message class | +0x4d4 (`IPM.Note` etc.) | V |
+| Preview, up to about 255 characters | +0x518 | V |
+| Date received | u64 ticks at +0x120 | C |
+| Date sent | u64 ticks at +0x2d8, a few seconds before received | C |
+| Folder | typed reference at +0x382 (id at +0x38c) to a 0x4d folder | V |
+| Account | object parent (+0x20) is the 0x4a mail account. Its u64 at +0x44 is the 0x49 account, whose +0x156c string is the primary SMTP address. | V |
+| Has attachment | bit 0x40 of byte +0x5e6 | C |
 
-5. Text runs. On both raw and inflated data, extract UTF-16LE runs with `re.compile(rb"(?:[\x20-\x7e]\x00){4,}")` and ASCII runs with `re.compile(rb"[\x20-\x7e]{6,}")`. Widen the UTF-16LE pattern to any code unit with a nonzero value later, since names may hold non-ASCII characters.
+**Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0x19d Reply-To. No Bcc kind was seen. Name at +0x124, address at +0x12c. (C)
 
-6. Anchors and fields. Find `"IPM.Note".encode("utf-16-le")`. Around each hit, split NUL-terminated UTF-16LE strings in a bounded window (for example 4 KB before and after). Tag email addresses with `rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"` (ASCII) and the same pattern encoded in UTF-16LE.
+**Bodies** are 0xca objects with the same id as the message. Descriptor +0x678 holds the UTF-8 HTML body. When the body is too large, a typed reference at +0x2b2 points to a 0xf7 file object whose +0x88 string is `~/Files/S0/<n>/EFMData/<k>.dat`. That file is gzip-compressed HTML (per teamscrawl, see below). `~` means the profile folder that holds HxStore.hxd. (V for the link, I for gzip until checked on a real file.) No plain-text body was seen.
 
-7. Message-ID. Search for `<...@...>` shaped strings in both encodings with `rb"<[^<>\s@]{1,200}@[^<>\s]{1,200}>"`. Expect few raw RFC822 headers. Record any hits but do not rely on Message-ID as a unique key.
+**Folders** (0x4d): name at +0x434. A u32 at +0x47c gives the well-known type independent of language: 0x61 Inbox, 0x63 Archive, 0x64 Drafts, 0x65 Sent Items, 0x67 Deleted Items. 0x62 and 0x66 are unknown; 0x7a is an ordinary folder. (V)
 
-8. Timestamps. Slide an 8-byte window over each inflated record and decode as int64. Keep values that fall between 2020-01-01 and 2027-12-31 as .NET ticks (`621355968000000000 + unix * 10**7`). Repeat for FILETIME (`116444736000000000 + unix * 10**7`) and Cocoa seconds or nanoseconds since 2001-01-01. Note the offset of each hit relative to the `IPM.Note` anchor. Look for the sentinel `FF3F37F47528CA2B`.
+## Attachments (class 0x16a)
 
-9. Ground truth. Take a set of known emails from the legacy archive for the overlap period April to October 2026. For each, build search keys: subject (UTF-16LE), sender address (ASCII), a distinctive phrase from the first 200 characters of the body (UTF-16LE and UTF-8), and the sent time as ticks plus or minus a few minutes. Measure hit rates per field. Use matched pairs to pin down fixed offsets for subject, sender, preview and sent time, and to confirm which encoding the timestamps use.
+| Field | Encoding | Confidence |
+|---|---|---|
+| Owning message | typed reference at +0x1a2 (message id at +0x1ac) | V |
+| File name | +0x260 | V |
+| Size | u64 at +0x238 | C |
+| Content type | area-one descriptor +0x250 | V |
+| Content-ID | +0x240 | V |
+| Inline | u32 at +0x2b0 == 2. Every attachment whose `cid:` the body references has 2; none with 0 does. | C |
+| Download state | u32 at +0x270: 2 present, 5 missing, 3 unknown | C |
+| **File reference** | +0x288: `~/Files/S0/<n>/Attachments/0/<stem>[<k>].<ext>`. A 0xf7 file object (typed reference at +0x10a) repeats the path at +0x88. | V |
 
-10. Output. Write candidate messages to a scratch SQLite file (offset, block, sender, display name, subject, preview, sent_utc, has_html). Keep provenance (file offset and block offset) for every field.
+`<n>` is one constant per profile. `<k>` is a uniquifier, sometimes equal to the attachment object id. The stored file name can differ from the display name.
 
-11. Cross-check. If allowed, build `hxprobe` from source 1 and run `hxprobe blocks` and `hxprobe db` on the same copy. Compare its output with ours. Review the source before building, and run it only on the copy.
+The importer resolves the reference against the profile folder (refusing paths that escape it) and stores `local_path` only when the file exists. Otherwise `local_path` is NULL and the tools say "open this message in Outlook to download it, then sync". Because HxStore is a live cache, the importer re-reads every message on each sync, so attachments downloaded later become available.
+
+The sample did not include the `Files/` folder, so the mapping from reference to real file is verified only in format, not against real files. See experiment 1.
+
+## Calendar
+
+**Event (class 0x6b).** The teamscrawl offsets hold on this build.
+
+| Field | Encoding | Confidence |
+|---|---|---|
+| UID (global object id) | area-one descriptor +0x334, upper-case hex starting `040000008200E00074C5B7101A82E008`. Matches the UID in ICS exports, so events dedupe across sources. | V |
+| Subject | +0x400 | V |
+| Start, end | u64 ticks at +0x248, +0x250, UTC | V |
+| Timezone | name at area-one +0x30c (Windows or IANA name), numeric id at +0x308 | V |
+| All-day | byte +0x43a bit 0x08; start and end are then UTC midnights | V |
+| Cancelled | byte +0x43a bit 0x10 | C |
+| Online meeting | byte +0x43b bit 0x10 | V |
+| Location | +0x344 | V |
+| Organizer name, address | +0x374, +0x37c | V |
+| Preview | +0x2bc | V |
+| Show as | u32 at +0x330: 0 free, 1 tentative, 2 busy | C |
+| Event type | u32 at +0x388: 0 single, 1 occurrence, 2 exception, 3 series master | C |
+| My response | u32 at +0x3e0: 0 accepted, 1 tentative, 2 declined (I), 3 organizer, 4 not responded | C |
+| Attendees | after the +0x36c string: u32 count, then per attendee u8 name length, UTF-16LE name, u8 address length, UTF-16LE address, u32 optional flag, u32 response (0 accepted, 1 tentative, 2 declined, 4 none), u32 unknown | V |
+| Detail | typed reference at +0xaa (id at +0xb4) to a 0x6c object | V |
+| Calendar | u64 at +0xe0 = 0x68 calendar id. Calendar name at 0x68 +0x30c, owner address at +0x2c8. | C |
+
+**Event detail (class 0x6c):** UTF-8 HTML body at +0x258, join URL at +0x2bc. (V)
+
+**Recurrence (I).** In a series master, area one starts with u64 series-start ticks, an optional u64 UNTIL, u16 1, u32 interval and u8 weekday (0 = Sunday). The importer turns that into `FREQ=WEEKLY;INTERVAL=n;BYDAY=XX[;UNTIL=date]`. This rests on 2 real series, both weekly, so daily, monthly and yearly patterns are not decoded. A master whose pattern is not recognised is imported with its first occurrence only and counted in the sync notes. The sample held no occurrence or exception objects, so deleted or moved occurrences (exdates) are unknown. Five more objects were typed as masters but had no UID and no strings. The importer skips them as stubs.
+
+## Public prior work
+
+Microsoft publishes no specification. These sources were used, and the findings above extend or correct them:
+
+1. [ukd1/hxstore-reverse-engineering](https://github.com/ukd1/hxstore-reverse-engineering) (SPEC.md, Rust tool `hxprobe`). Header, dual CRC-32, LZ4 payloads, .NET ticks, object envelope. Its fixed 40-byte block header is wrong for 16-byte keys (see Blocks). Mirrored as securized/hxstore-reverse-engineering.
+2. [mitchell-johnson/hxstore-decode](https://github.com/mitchell-johnson/hxstore-decode) (HXSTORE.md, Python `hxdecode`). Slot view of pages, `EFMData` and `Attachments` folders under `Files/S0/3/`, `hxcore.hfl`. Heuristic extraction.
+3. [ourostack/teamscrawl PR #60](https://github.com/ourostack/teamscrawl/pull/60). Calendar event (0x6b, fs 0x455) and detail (0x6c, fs 0x348) layouts, which hold on 16.113.4. It documents a 16.115 build where some fixed sizes differ (0xca, 0x4d, 0x49), which is why the importer checks fs per class.
+4. Chivers, "Navigating the Windows Mail database", Digital Investigation (2018). The older Windows Mail `store.vol` (ESE), background only.
+
+No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kaitai definition for HxStore was found. Windows Mail reportedly uses version `h`, which is untested.
 
 ## Open questions
 
-- Which framing matches our file: the 40-byte block header with the fixed magic, or the 32-byte slot header with a hash?
-- Do we see the 99.9% CRC pass rate that source 1 reports on our Outlook build?
-- Meaning of block type values (8, 16) and of the u64 at block +0x20.
-- Where are recipients (To, Cc, Bcc) stored?
-- Where are read state, flags and categories?
-- How are folder hierarchy and current membership encoded?
-- What is `hxcore.hfl`? Is it a write-ahead log that holds recent changes not yet in HxStore.hxd?
-- How do `EFMData/N.dat` files link to message records?
-- How much does the format change across Outlook builds, and between macOS `i` and Windows `h`?
-- Is there a stable per-message server ID (for example an Exchange item ID or ImmutableId) we can use as a key?
-- How many messages from the April to October 2026 overlap exist in the cache at all, given on-demand sync?
+- Read/unread, flag, importance and categories: not located.
+- Bcc on sent mail: no recipient kind seen.
+- The second name/address pair at +0x440/+0x448.
+- Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).
+- Recurrence beyond weekly, exceptions and deleted occurrences.
+- My-response code 2 (assumed declined).
+- Whether the 51-byte key equals Graph's ImmutableId.
+- The header fields at 0x10 and 0x68, and the region at 0x3000.
+- About 16% of payload bytes lie outside recognised objects.
+- What `hxcore.hfl` holds, and whether recent changes sit there before reaching HxStore.hxd. The importer ignores it.
+
+## Experiments to run locally
+
+Use synthetic content only (made-up subjects, a test PDF). Quit Outlook before each copy and copy `HxStore.hxd` and `Files/` together. `outlook-archive snapshot --source hxstore --dest /tmp/hx-before` makes the copy. Then diff two snapshots by class, id and fixed-region bytes.
+
+1. **Attachment mapping.** Send yourself a message with subject `HXPROBE-A1-<random>`, one Cc and one Bcc address, and a small PDF of known size. Open it so Outlook downloads the PDF. Snapshot. Then run:
+   `find "$PROFILE/Files" -type f -newer /tmp/hx-before -exec ls -l {} \;`
+   This shows the new file under `Files/S0/<n>/Attachments/0/`. Check that its size equals the attachment size and that `outlook-archive sync --source hxstore` reports it as available. The Sent Items copy will show whether Bcc has its own recipient kind.
+2. **Read state, flags, importance.** Mark that message read, then unread, then flagged, then high importance, with a snapshot after each step. The byte that changes each time is the field.
+3. **Inline image.** Send an HTML message with an embedded image. The inline flag (+0x2b0 = 2) should be set, and the has-attachment bit should stay clear.
+4. **Recurrence.** Create `HXPROBE-R1` events: every 2 days until a date, monthly on the 2nd Tuesday, weekly on Monday, Wednesday and Friday. Delete one occurrence and move another. Diff area one of each master and look for new occurrence or exception objects.
+5. **Responses.** From a second account, send three invitations. Accept one, decline one, mark one tentative. Check +0x3e0 and the attendee records.
+6. **Large bodies.** Check that `Files/S0/<n>/EFMData/*.dat` files are gzip: `file Files/S0/*/EFMData/*.dat | head`.
+7. **Header.** Diff bytes 0 to 0x80 and the region at 0x3000 across two snapshots.
 
 ## Safety notes
 
-- Work on copies only. Never open the live file under the Group Containers path for parsing.
-- Quit Outlook before copying, or the copy may be torn. Outlook holds `HxStore.lock` and rewrites the store while running.
-- Open copies read-only (`"rb"`, `mmap.ACCESS_READ`). Never write back to the profile folder.
-- Copy `HxStore.hxd`, `hxcore.hfl` and `Files/` together from the same moment so they stay consistent.
-- Keep a SHA-256 of the original and the copy. Re-check the copy after each analysis session.
-- The store holds private mail. Keep extracts, logs and test fixtures out of git. Use synthetic fixtures in `tests/`.
-- Review any third-party parser before running it. Run it only on a copy.
-- On macOS, reading the Group Containers folder may need Full Disk Access for the terminal. Grant it only for the copy step.
+- The importer parses only a private copy (`snapshot`). It reads `Files/` in place, read-only, and never writes under the Outlook profile.
+- Keep real stores, extracts and logs out of git. `.gitignore` blocks `*.hxd`, `*.hxd.zip`, `*.hfl` and `*.olk15*`. Test fixtures are synthetic (`tests/hxsynth.py` writes a store from made-up objects).
+- On macOS, reading the Group Containers folder may need Full Disk Access for the process that runs the sync.

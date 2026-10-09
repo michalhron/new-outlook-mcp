@@ -113,9 +113,7 @@ def _resolve_id(archive: Archive, email_id: str | int) -> sqlite3.Row:
 
 # ------------------------------------------------------------------- tools
 
-def search_emails(
-    archive: Archive,
-    query: str | None = None,
+def _filter_clauses(
     *,
     from_: str | None = None,
     to: str | None = None,
@@ -125,12 +123,8 @@ def search_emails(
     date_to: str | None = None,
     has_attachment: bool | None = None,
     attachment_name: str | None = None,
-    sort: str = "relevance",
-    limit: int = 20,
-    offset: int = 0,
-) -> dict:
-    limit = _clamp_limit(limit)
-    offset = max(0, int(offset))
+) -> tuple[list[str], list[object]]:
+    """SQL conditions (over messages m, folders f, accounts a) shared by every search mode."""
     where: list[str] = []
     params: list[object] = []
     if attachment_name:
@@ -159,6 +153,45 @@ def search_emails(
     if has_attachment is not None:
         where.append("m.has_attachment = ?")
         params.append(int(bool(has_attachment)))
+
+    return where, params
+
+
+def search_emails(
+    archive: Archive,
+    query: str | None = None,
+    *,
+    from_: str | None = None,
+    to: str | None = None,
+    folder: str | None = None,
+    account: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    has_attachment: bool | None = None,
+    attachment_name: str | None = None,
+    sort: str = "relevance",
+    limit: int = 20,
+    offset: int = 0,
+    mode: str = "keyword",
+) -> dict:
+    limit = _clamp_limit(limit)
+    offset = max(0, int(offset))
+    if mode not in ("keyword", "semantic", "hybrid"):
+        raise ToolInputError("mode must be 'keyword', 'semantic' or 'hybrid'")
+    where, params = _filter_clauses(from_=from_, to=to, folder=folder, account=account, date_from=date_from,
+                                    date_to=date_to, has_attachment=has_attachment, attachment_name=attachment_name)
+    fallback_note = None
+    if mode == "semantic" or (mode == "hybrid" and (query or "").strip()):
+        from . import semantic
+        from .embedder import SemanticUnavailable
+
+        try:
+            return semantic.search_by_mode(archive, query, mode, where, params, sort=sort, limit=limit,
+                                           offset=offset)
+        except SemanticUnavailable as exc:
+            if mode == "semantic":
+                raise ToolInputError(str(exc)) from exc
+            fallback_note = f"{exc} Showing keyword results."
 
     if sort not in ("relevance", "date_desc", "date_asc"):
         raise ToolInputError("sort must be 'relevance', 'date_desc' or 'date_asc'")
@@ -204,6 +237,8 @@ def search_emails(
     out: dict = {"total": total, "offset": offset, "count": len(results), "results": results}
     if used is not None and used != query:
         out["note"] = f"query was not valid FTS5 syntax; searched for {used}"
+    if fallback_note:
+        out["note"] = fallback_note + (" " + out["note"] if "note" in out else "")
     if offset + len(results) < total:
         out["next_offset"] = offset + len(results)
     return out
@@ -527,7 +562,31 @@ def create_draft(
     }
 
 
+def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:
+    """Search by meaning (see semantic.py). Filters: from_, to, folder, account, date_from, date_to,
+    has_attachment, attachment_name."""
+    from . import semantic
+    from .embedder import SemanticUnavailable
+
+    try:
+        return semantic.semantic_search(archive, query, mode=mode, limit=limit, **filters)
+    except SemanticUnavailable as exc:
+        raise ToolInputError(str(exc)) from exc
+
+
+def find_similar(archive: Archive, email_id: str | None = None, *, attachment_id: int | None = None,
+                 limit: int = 10) -> dict:
+    """Messages or attachments that resemble an email or an attachment."""
+    from . import semantic
+    from .embedder import SemanticUnavailable
+
+    try:
+        return semantic.find_similar(archive, email_id=email_id, attachment_id=attachment_id, limit=limit)
+    except SemanticUnavailable as exc:
+        raise ToolInputError(str(exc)) from exc
+
+
 __all__ = [
-    "ToolInputError", "search_emails", "get_email", "get_thread", "list_recent", "list_folders",
+    "ToolInputError", "semantic_search", "find_similar", "search_emails", "get_email", "get_thread", "list_recent", "list_folders",
     "archive_status", "list_attachments", "get_attachment", "build_mailto", "create_draft", "normalize_subject",
 ]

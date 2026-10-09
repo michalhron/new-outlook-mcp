@@ -119,6 +119,33 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     tokenize = 'unicode61 remove_diacritics 2'
 );
 
+-- Search by meaning ------------------------------------------------------
+-- Text pieces that get embedded. Vectors live in chunk_vec (sqlite-vec) or
+-- chunk_vectors (float32 blobs), created on demand by `new-outlook embed`.
+
+CREATE TABLE IF NOT EXISTS chunks (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('body', 'subject', 'attachment')),
+    message_pk INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    attachment_id INTEGER REFERENCES attachments(id) ON DELETE SET NULL,
+    ord INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    char_start INTEGER,
+    char_end INTEGER,
+    model TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_chunks_msg ON chunks(message_pk);
+CREATE INDEX IF NOT EXISTS idx_chunks_att ON chunks(attachment_id);
+
+-- Which messages are fully embedded, so a backfill can stop and resume.
+CREATE TABLE IF NOT EXISTS embedded_messages (
+    message_pk INTEGER PRIMARY KEY REFERENCES messages(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    n_chunks INTEGER NOT NULL,
+    embedded_at TEXT NOT NULL
+);
+
 -- Calendar ---------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS calendars (

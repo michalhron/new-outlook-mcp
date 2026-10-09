@@ -60,13 +60,14 @@ Ground rules for every phase:
 **Done when:** "what's on my calendar next week" and "prep me for tomorrow's 10:00" work from the archive.
 
 ## Phase 5: Search by meaning (the ambition)
-- Local embeddings only, nothing sent off the machine. Use a multilingual model (English + Czech at minimum), e.g. `multilingual-e5-small` or `bge-m3`, run on-device.
-- Vector store inside the same SQLite DB (`sqlite-vec`)
-- What gets embedded: message bodies chunked by paragraph (quoted replies and signatures stripped), subjects, and **attachment text** (PDF / DOCX / XLSX chunks)
-- Hybrid ranking: FTS5 keyword score + vector similarity, fused with Reciprocal Rank Fusion. All existing filters (date, sender, folder, account) still apply.
-- Incremental: new mail embedded during sync. Re-embedding is resumable.
-- Tools: `semantic_search(query, filters)` and `find_similar(message_id | attachment_id)`. `search_emails` gains `mode: keyword | semantic | hybrid`.
-- Results return the matching chunk as the snippet, so Claude sees *why* it matched
-- Respects privacy scopes from Phase 3
+- [x] Local embeddings only, nothing sent off the machine. Multilingual (English + Czech): `multilingual-e5-small` by default, `bge-m3` with `--model`, run on-device
+- [x] Vector store inside the same SQLite DB (`sqlite-vec`, with a numpy blob fallback when the extension cannot load)
+- [x] What gets embedded: message bodies chunked by paragraph (quoted replies and signatures stripped), subjects, and **attachment text** (PDF / DOCX / XLSX chunks) for attachments stored on this Mac
+- [x] Hybrid ranking: FTS5 keyword score + vector similarity, fused with Reciprocal Rank Fusion. All existing filters (date, sender, folder, account) still apply.
+- [x] Incremental: new mail embedded during sync once `new-outlook embed` has run. Re-embedding is resumable.
+- [x] Tools: `semantic_search(query, filters)` and `find_similar(email_id | attachment_id)`. `search_emails` gains `mode: keyword | semantic | hybrid`.
+- [x] Results return the matching chunk as the snippet, so Claude sees *why* it matched
+- [ ] Respects privacy scopes from Phase 3 (every semantic path calls `privacy.filter_allowed_message_ids`, the scopes themselves plug in there)
+- [ ] Measure the "done when" below on the real archive
 
 **Done when:** queries phrased from memory ("the email where someone suggested reframing the hype paper", "reviewer comments about construct validity") find the right message or attachment in the top 5, without matching keywords, across the full archive. Embedding the existing archive takes under an hour on this Mac.

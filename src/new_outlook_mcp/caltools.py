@@ -128,7 +128,7 @@ def _instances(archive: Archive, lo: datetime, hi: datetime, *, calendar: str | 
     return out
 
 
-def _instance_summary(r: sqlite3.Row, tz: ZoneInfo) -> dict:
+def _instance_summary(r: sqlite3.Row, tz: ZoneInfo, archive: Archive) -> dict:
     out = {
         "event_id": r["id"],
         "occurrence": r["occurrence_key"],
@@ -141,7 +141,7 @@ def _instance_summary(r: sqlite3.Row, tz: ZoneInfo) -> dict:
         "my_response": r["my_response"],
         "busy_status": r["busy_status"],
         "calendar": r["calendar"],
-        "account": r["account"],
+        "account": archive.display_account(r["account"]),
         "is_recurring": bool(r["rrule"]) or bool(r["is_exception"]),
     }
     if r["online_meeting_url"]:
@@ -169,7 +169,7 @@ def list_calendar_events(archive: Archive, start: str, end: str | None = None, *
     rows = _instances(archive, lo, hi, calendar=calendar, account=account, include_cancelled=include_cancelled)
     limit = max(1, min(int(limit), MAX_EVENTS))
     out = {"timezone": tz.key, "start": lo.isoformat(), "end": hi.isoformat(), "total": len(rows),
-           "events": [_instance_summary(r, tz) for r in rows[:limit]]}
+           "events": [_instance_summary(r, tz, archive) for r in rows[:limit]]}
     if len(rows) > limit:
         out["note"] = f"showing the first {limit} of {len(rows)} events; narrow the range or raise limit"
     return out
@@ -212,7 +212,7 @@ def get_calendar_event(archive: Archive, event_id: int | str, *, timezone_name: 
         "busy_status": r["busy_status"],
         "is_cancelled": bool(r["is_cancelled"]),
         "calendar": r["calendar"],
-        "account": r["account"],
+        "account": archive.display_account(r["account"]),
         "recurrence": {"rrule": r["rrule"], "exdates": json.loads(r["exdates_json"] or "[]")} if r["rrule"] else None,
         "modified_occurrence_of": r["recurrence_id"],
         "next_occurrences": [{"start": _fmt(u["start_ts"], tz, all_day), "end": _fmt(u["end_ts"], tz, all_day)}

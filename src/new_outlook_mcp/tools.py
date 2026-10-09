@@ -380,6 +380,7 @@ def archive_status(archive: Archive) -> dict:
     return {
         "database": str(archive.path),
         "counts": counts,
+        "accounts": archive.account_overview(mf),
         "coverage_by_source": archive.coverage(mf),
         "calendar_coverage_by_source": archive.calendar_coverage(ef),
         "last_sync_by_source": archive.last_runs(),

@@ -280,7 +280,9 @@ No official schema exists. The legacy importer rests on two open-source parsers,
 | `Message_NormalizedSubject`, `Message_SenderList`, `Message_DisplayTo`, `Message_MessageID`, `Message_ReadFlag`, `Message_HasAttachment`, `Message_Preview`, `Message_Size`, `Conversation_ConversationID` | Used by pyolk and/or olk15-export |
 | `Message_SenderAddressList`, `Message_ToRecipientAddressList`, `Message_CCRecipientAddressList` | olk15-export only. Optional: the importer checks `PRAGMA table_info` |
 | `Folders(Record_RecordID, Folder_Name, Folder_ParentID)` | pyolk |
-| `Record_AccountUID` maps to `Record_RecordID` in `AccountsExchange` / `AccountsMail` | Assumed. No source shows it. Unmatched ids appear as `account-<n>` |
+| `Mail.Record_AccountUID` equals `AccountsExchange.Account_MailAccountUID`; `AccountsMail.Account_ExchangeAccountUID` links to the Exchange account; account 0 is "On My Computer" | Verified on real data. Unmatched ids appear as `account-<n>` |
+| Root folders have no name. The root holding the Inbox is the mailbox and is left out of paths. Other unnamed roots show as "On My Computer" or "Other store" | Verified on real data (root names); the store type of other roots is assumed |
+| Some drafts and deleted items carry 2032-01-02 as a "no date" sentinel, in both sources | Verified on real data. Dates more than a day in the future count as missing; the importer falls back to the sent or modified time |
 | `Mail_OwnedBlocks` ⋈ `Blocks` on `BlockID` and `BlockTag`; `BlockTag` is a big-endian FourCC (`Attc` = 1098151011, `MSrc` = 1297314403) | `Attc` value appears in olk15-export. `MSrc` value is computed by the same rule |
 | `.olk15*` files start with `D0 0D 00 00`; int32 at offset 8 is 1 (record) or 2 (block); block payload starts at byte 40 | pyolk, and hex dumps of real attachment fixtures in olk15-export |
 | `.olk15Message` property collection: subject `(0x1F, 0x01)` UTF-16LE, body `(0x1F, 0x1E)` HTML, headers `(0x1E, 0x04)` | pyolk |

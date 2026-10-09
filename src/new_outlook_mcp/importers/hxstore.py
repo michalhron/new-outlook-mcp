@@ -14,13 +14,12 @@ import logging
 import shutil
 import time
 from collections.abc import Iterator
-from datetime import timezone
 from pathlib import Path
 
 from .. import mime, orphans
 from ..calendar_store import AttendeeInfo, EventRecord
 from ..ics import find_meeting_url
-from ..model import AttachmentInfo, MessageRecord
+from ..model import AttachmentInfo, MessageRecord, first_plausible
 from ..snapshot import SnapshotError
 from . import hxformat
 from .base import Importer
@@ -163,9 +162,8 @@ class HxStoreImporter(Importer):
         rec.from_name, rec.from_addr = m.from_name, m.from_addr
         rec.to = [s for s in (_fmt(n, a) for n, a in m.to) if s]
         rec.cc = [s for s in (_fmt(n, a) for n, a in m.cc) if s]
-        rec.date = (m.date_received or m.date_sent)
-        if rec.date:
-            rec.date = rec.date.astimezone(timezone.utc)
+        # 2032-01-02 is a "no date" sentinel on some drafts and deleted items.
+        rec.date = first_plausible(m.date_received, m.date_sent, m.last_modified)
         rec.folder = m.folder or m.folder_type
         rec.account = m.account
         rec.in_reply_to = m.in_reply_to

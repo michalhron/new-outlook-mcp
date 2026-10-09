@@ -112,7 +112,8 @@ For Claude Desktop, add to `claude_desktop_config.json`:
 | `list_recent` | Newest messages, optionally by folder, account or last N days. |
 | `list_folders` | Folders with counts and date ranges. |
 | `list_attachments` | Attachments of a message and whether each is on this Mac. Small inline images (signature logos) are hidden unless `include_inline=true`. |
-| `get_attachment` | `mode="text"` extracts text, `"path"` returns a local path, `"open"` opens it in its default app. |
+| `get_attachment` | `mode="text"` extracts text, `"path"` returns a local path, `"open"` opens it in its default app. Also takes `orphan:<n>` ids from `search_files`. |
+| `search_files` | Full-text search over orphan files (see Orphan files): attachment files and bodies in Outlook's cache that no archived message owns. Filters `kind` (`attachment` or `body`), `date_from`, `date_to` (file dates). |
 | `archive_status` | Message counts, date coverage per source, last sync per source. |
 | `sync_now` | Runs an import from the local files. |
 | `create_draft` | Opens a prefilled draft (to, cc, bcc, subject, body) in the default mail app. You send it. |
@@ -218,7 +219,7 @@ The snapshot is deleted after a successful import. Keep it with `--keep-snapshot
 
 ## Archive layout
 
-`archive.db` holds `messages` (one row per unique message, with raw RFC 822 source zlib-compressed when available and under 5 MB), `messages_fts` (FTS5 over subject, sender, recipients, body), `message_sources` (which importer saw which message under which source key, used for incremental imports and coverage), `folders`, `accounts`, `attachments` (filename, size, content type, content-id, inline flag, source, local path or NULL) and `sync_runs`.
+`archive.db` holds `messages` (one row per unique message, with raw RFC 822 source zlib-compressed when available and under 5 MB), `messages_fts` (FTS5 over subject, sender, recipients, body), `message_sources` (which importer saw which message under which source key, used for incremental imports and coverage), `folders`, `accounts`, `attachments` (filename, size, content type, content-id, inline flag, source, local path or NULL), `orphan_files` with `orphan_fts` (files in `Files/` that no message owns, with their copied text) and `sync_runs`.
 
 Deduplication uses the Internet Message-ID. Without one, it uses a SHA-256 of sender address, date and subject. When two sources hold the same message, the first import wins for every field it filled, and later sources only fill gaps.
 
@@ -279,6 +280,20 @@ What to expect:
 - `new-outlook coverage` shows message counts per account and folder by week and by day, from the archive or straight from a copy (`--hxstore PATH`). Use it to see how far back the cache reaches and whether recent days have gaps.
 - `new-outlook snapshot --source hxstore --dest DIR` keeps a decoded copy plus `files-listing.tsv` for before/after experiments. The listing contains attachment file names, so keep `DIR` outside the repository.
 - Read state, flags and Bcc are not decoded yet.
+
+### Orphan files
+
+Outlook keeps files in `Main Profile/Files/` long after their messages leave the cache. On one profile that was about 2,900 attachment files for 730 attachment records, and about 900 cached bodies for 33 referenced ones. The sync indexes the files that no record points to ("orphans") so their content is not lost:
+
+- It scans `Files/S0/<n>/Attachments/**` and `Files/S0/<n>/EFMData/*.dat`. It skips `AadLogos`, `NonPersisted`, `Data`, `MimeFiles` and every `*cleanup*` folder. Hidden and temporary files are skipped too.
+- For each orphan attachment it stores the display name (Outlook's `[1]` uniquifier removed), size, type, file date, SHA-256 and the extracted text (PDF, Word, Excel, plain text, CSV, calendar, HTML). Images keep no text. Small png and gif files under 10 KB are skipped because they are mostly signature logos. Use `new-outlook sync --include-small-images` to keep them.
+- For each orphan body it decompresses the HTML and stores the text. It then tries to match the body to a message by the Message-ID found in the HTML, or by `<title>` and file date when exactly one message fits. A matched body upgrades a message that only has a preview. A body that matches nothing, or more than one message, stays an orphan.
+- The text is copied into the archive. Binary files are never copied. When Outlook later deletes a file, `search_files` and `get_attachment mode="text"` still work, and the entry shows `available_locally: false`.
+- Later syncs skip files whose path, size and date did not change. Use `--no-orphan-files` to turn the scan off.
+
+Find orphans with `search_files`. Each hit has an `attachment_id` like `orphan:12`. Pass it to `get_attachment` for text, a path, or to open the file. `search_emails` and `list_attachments` do not change, and orphan bodies matched to a message are found through `search_emails`.
+
+What this means for coverage: orphans have no sender, recipients or folder, and their date is the date of the file, not of the message. They add content that the message index lacks, but they do not make the mail archive more complete. `new-outlook validate` prints linked and orphan counts in a "Files/ cache" section (counts only, no file names).
 
 ## Development
 

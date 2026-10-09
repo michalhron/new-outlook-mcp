@@ -26,15 +26,29 @@ def block_file(fourcc: str, payload: bytes) -> bytes:
     return header + payload
 
 
-def entity_file(record_id: int, props: dict[tuple[int, int], bytes]) -> bytes:
-    header = MAGIC + b"\x01\x01\x01\x00" + struct.pack("<i", olk15.KIND_ENTITY)
-    header += struct.pack("<ii", record_id, 3) + b"\x00" * 12 + b"gsMM" + b"\x00" * 4
-    assert len(header) == olk15.HEADER_SIZE
+def collection(props: dict[tuple[int, int], bytes]) -> bytes:
     items = list(props.items())
     head = struct.pack("<3i", len(items), 12 + 8 * len(items), sum(len(v) for _, v in items))
     for (vtype, idx), value in items:
-        head += struct.pack("<HHi", idx, vtype, len(value))
-    return header + head + b"".join(v for _, v in items)
+        head += olk15.encode_key(vtype, idx) + struct.pack("<i", len(value))
+    return head + b"".join(v for _, v in items)
+
+
+def collection_list(items: list[dict[tuple[int, int], bytes]]) -> bytes:
+    blobs = [collection(i) for i in items]
+    return struct.pack("<i", len(blobs)) + b"".join(struct.pack("<h", len(b)) for b in blobs) + b"".join(blobs)
+
+
+def user_record(addr: str, name: str) -> bytes:
+    a, n = addr.encode(), name.encode("utf-16-le")
+    return b"\x03\x00\x02\x03\x00\x00" + b"\x00" * 22 + struct.pack("<i", len(a)) + a + struct.pack("<i", len(n)) + n
+
+
+def entity_file(record_id: int, props: dict[tuple[int, int], bytes], class_id: int = 3) -> bytes:
+    header = MAGIC + b"\x01\x01\x01\x00" + struct.pack("<i", olk15.KIND_ENTITY)
+    header += struct.pack("<ii", record_id, class_id) + b"\x00" * 12 + b"gsMM" + b"\x00" * 4
+    assert len(header) == olk15.HEADER_SIZE
+    return header + collection(props)
 
 
 def utf16z(s: str) -> bytes:
@@ -171,6 +185,7 @@ def build_legacy_data(root: Path) -> Path:
     mail.append((105, rel, 1, 1, "Quarterly budget review", "Ada Example", "ada@example.org", None, None, None,
                  unix(2024, 3, 5, 8, 15), None, "alpha-1@example.org", 1, 0, "Hi Bob", 2048, 7001))
 
+    _add_legacy_calendar(conn, data)
     conn.executemany(
         """INSERT INTO Mail (Record_RecordID, PathToDataFile, Record_FolderID, Record_AccountUID,
                Message_NormalizedSubject, Message_SenderList, Message_SenderAddressList, Message_DisplayTo,
@@ -182,6 +197,146 @@ def build_legacy_data(root: Path) -> Path:
     conn.commit()
     conn.close()
     return data
+
+
+WIN_EPOCH = datetime(1601, 1, 1, tzinfo=timezone.utc)
+
+
+def wm(dt: datetime) -> int:
+    """Minutes since 1601-01-01 UTC, as Outlook for Mac stores event times."""
+    return int((dt - WIN_EPOCH).total_seconds() // 60)
+
+
+def utc(y, mo, d, h=0, mi=0) -> datetime:
+    return datetime(y, mo, d, h, mi, tzinfo=timezone.utc)
+
+
+def i32(v: int) -> bytes:
+    return struct.pack("<i", v)
+
+
+def tz_collection(tzid: str) -> bytes:
+    return collection({(0x4643, 0x7A74): tzid.encode()})
+
+
+def _add_legacy_calendar(conn: sqlite3.Connection, data: Path) -> None:
+    """Five synthetic events in a 'Calendar' folder. See test_calendar.py for what each one checks."""
+    from outlook_archive_mcp.importers import legacy_calendar as lc
+
+    (data / "Events/S0").mkdir(parents=True, exist_ok=True)
+    conn.executescript(
+        """
+        CREATE TABLE CalendarEvents (
+            Record_RecordID INTEGER PRIMARY KEY, PathToDataFile TEXT, Record_FolderID INTEGER,
+            Record_AccountUID INTEGER, Calendar_StartDateUTC INTEGER, Calendar_EndDateUTC INTEGER,
+            Calendar_IsRecurring INTEGER, Calendar_RecurrenceID INTEGER, Calendar_MasterRecordID INTEGER);
+        INSERT INTO Folders VALUES (4, 'Calendar', 999, 1, 0);
+        """
+    )
+
+    def add(rid, start, end, props, *, recurring=0, recurrence_id=None, master=None):
+        rel = f"Events/S0/{uuid.uuid4()}.olk15Event"
+        (data / rel).write_bytes(entity_file(rid, props, class_id=8))
+        conn.execute("INSERT INTO CalendarEvents VALUES (?, ?, 4, 1, ?, ?, ?, ?, ?)",
+                     (rid, rel, wm(start), wm(end), recurring, recurrence_id, master))
+
+    prague = tz_collection("Europe/Prague")
+    # 201: single meeting with organizer, attendees and a Teams link.
+    add(201, utc(2026, 10, 14, 8), utc(2026, 10, 14, 9), {
+        lc.EV_SUBJECT: utf16z("Project kickoff"),
+        lc.EV_LOCATION: utf16z("Room 4.12"),
+        lc.EV_BODY: utf16z("<p>Agenda: scope, budget, timeline.</p>"),
+        lc.EV_UID: b"UID-KICKOFF-1\x00",
+        lc.EV_HTTP_JOIN_LINK: utf16z("https://teams.microsoft.com/l/meetup-join/19%3ameeting_synthetic"),
+        lc.EV_RESPONSE: i32(1),
+        lc.EV_BUSY: i32(0),
+        lc.EV_ORGANIZER: user_record("erin@example.com", "Erin Demo"),
+        lc.EV_ATTENDEES: collection_list([
+            {lc.ATT_NAME: utf16z("Ada Example"), lc.ATT_ADDR: b"ada@example.org\x00", lc.ATT_TYPE: i32(0),
+             lc.EV_RESPONSE: i32(1)},
+            {lc.ATT_NAME: utf16z("Bob Sample"), lc.ATT_ADDR: b"bob@example.net\x00", lc.ATT_TYPE: i32(1),
+             lc.EV_RESPONSE: i32(2)},
+        ]),
+        lc.EV_TIMEZONE: prague,
+    })
+    # 202: weekly on Monday 09:00 Prague time across the 29 Mar 2026 DST switch, 16 Mar skipped.
+    add(202, utc(2026, 3, 2, 8), utc(2026, 3, 2, 9), {
+        lc.EV_SUBJECT: utf16z("Weekly team sync"),
+        lc.EV_UID: b"UID-WEEKLY-1\x00",
+        lc.EV_TIMEZONE: prague,
+        lc.EV_RRULE: collection({
+            lc.RR_TYPE: i32(1), lc.RR_INTERVAL: i32(1), lc.RR_WEEKDAYS: i32(0b0000010),
+            lc.RR_END_TYPE: i32(8225), lc.RR_UNTIL: i32(wm(utc(2026, 4, 13))),
+            lc.RR_EXCEPTIONS: i32(wm(utc(2026, 3, 16))),
+        }),
+    }, recurring=1)
+    # 203: the 23 Mar occurrence of 202, moved to Tuesday 24 Mar 14:00 Prague time.
+    add(203, utc(2026, 3, 24, 13), utc(2026, 3, 24, 14), {
+        lc.EV_SUBJECT: utf16z("Weekly team sync (moved)"),
+        lc.EV_TIMEZONE: prague,
+    }, recurrence_id=wm(utc(2026, 3, 23, 8)), master=202)
+    # 204: all-day, out of office.
+    add(204, utc(2026, 10, 20), utc(2026, 10, 21), {
+        lc.EV_SUBJECT: utf16z("Conference travel"),
+        lc.EV_UID: b"UID-TRAVEL-1\x00",
+        lc.EV_ALL_DAY: b"\x01",
+        lc.EV_BUSY: i32(3),
+    })
+    # 205: cancelled.
+    add(205, utc(2026, 10, 15, 12), utc(2026, 10, 15, 13), {
+        lc.EV_SUBJECT: utf16z("Cancelled lunch talk"),
+        lc.EV_UID: b"UID-CANCELLED-1\x00",
+        lc.EV_CANCELLED: b"\x01",
+    })
+
+
+FEED_ICS = """BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Synthetic//Test//EN
+X-WR-CALNAME:Work
+BEGIN:VTIMEZONE
+TZID:W. Europe Standard Time
+BEGIN:STANDARD
+DTSTART:16010101T030000
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:16010101T020000
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:UID-KICKOFF-1
+SUMMARY:Project kickoff
+DTSTART;TZID=W. Europe Standard Time:20261014T100000
+DTEND;TZID=W. Europe Standard Time:20261014T110000
+LOCATION:Room 5.01 (changed)
+STATUS:CONFIRMED
+END:VEVENT
+BEGIN:VEVENT
+UID:UID-SEMINAR-1
+SUMMARY:Reading seminar
+DESCRIPTION:Join: https://zoom.us/j/123456789 (synthetic)
+DTSTART;TZID=W. Europe Standard Time:20261005T140000
+DTEND;TZID=W. Europe Standard Time:20261005T153000
+RRULE:FREQ=WEEKLY;BYDAY=MO;COUNT=6
+EXDATE;TZID=W. Europe Standard Time:20261019T140000
+ORGANIZER;CN=Me:mailto:me@uni.example.edu
+ATTENDEE;CN=Frank;PARTSTAT=ACCEPTED;ROLE=REQ-PARTICIPANT:mailto:frank@example.org
+END:VEVENT
+BEGIN:VEVENT
+UID:UID-SEMINAR-1
+RECURRENCE-ID;TZID=W. Europe Standard Time:20261026T140000
+SUMMARY:Reading seminar (room change)
+DTSTART;TZID=W. Europe Standard Time:20261026T160000
+DTEND;TZID=W. Europe Standard Time:20261026T173000
+END:VEVENT
+END:VCALENDAR
+"""
 
 
 def add_legacy_message(data: Path, rid: int, subject: str, when: int) -> None:

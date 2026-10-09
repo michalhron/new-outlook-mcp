@@ -13,19 +13,23 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pydantic import Field
 
-from . import __version__, paths, tools
+from . import __version__, caltools, paths, tools
 from .db import Archive
 from .sync import sync
+
+TzParam = Annotated[str | None, Field(description="IANA timezone for input and output times (default: this Mac's zone)")]
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
 INSTRUCTIONS = """\
-Local, read-only archive of the user's Outlook for Mac mail. It contains the
-frozen legacy Outlook archive and, once supported, the New Outlook cache.
-Search with search_emails, then open a message with get_email (use its `id`).
-Bodies are plain text and may be truncated: pass `offset` = `next_offset` to
-continue. The archive cannot send mail. create_draft only opens a prefilled
-draft window that the user must review and send themselves.
+Local, read-only archive of the user's Outlook for Mac mail and calendar: the
+frozen legacy Outlook archive, the New Outlook cache, and optional published
+ICS feeds. Search with search_emails, then open a message with get_email (use
+its `id`). Bodies are plain text and may be truncated: pass `offset` =
+`next_offset` to continue. Calendar tools work on the user's own calendar only.
+Nothing here can send mail, answer invitations, or change calendar events.
+create_draft and create_event_draft only open a draft that the user reviews
+and sends or saves themselves.
 """
 
 
@@ -119,6 +123,100 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         on this Mac, the result says so."""
         return call(tools.get_attachment, attachment_id, mode=mode, offset=offset, max_chars=max_chars)
 
+
+    @server.tool(annotations=READ_ONLY)
+    def list_calendar_events(
+        start: Annotated[str, Field(description="Start, YYYY-MM-DD or ISO 8601 (local time if no offset)")],
+        end: Annotated[str | None, Field(description="End, inclusive day or ISO 8601. Default: start + 7 days")] = None,
+        calendar: Annotated[str | None, Field(description="Calendar name contains this text")] = None,
+        account: str | None = None,
+        timezone: TzParam = None,
+        include_cancelled: bool = False,
+        limit: Annotated[int, Field(ge=1, le=500)] = 200,
+    ) -> dict:
+        """List calendar event occurrences in a date range (recurring events are expanded)."""
+        return call(caltools.list_calendar_events, start, end, calendar=calendar, account=account,
+                    timezone_name=timezone, include_cancelled=include_cancelled, limit=limit)
+
+    @server.tool(annotations=READ_ONLY)
+    def get_calendar_event(
+        event_id: Annotated[str, Field(description="event_id from list_calendar_events or search_calendar")],
+        timezone: TzParam = None,
+    ) -> dict:
+        """Full details of one event: times, attendees and responses, body, meeting link, recurrence."""
+        return call(caltools.get_calendar_event, event_id, timezone_name=timezone)
+
+    @server.tool(annotations=READ_ONLY)
+    def search_calendar(
+        query: Annotated[str, Field(description="Full-text query over subject, location, people and body")],
+        date_from: str | None = None,
+        date_to: str | None = None,
+        timezone: TzParam = None,
+        limit: Annotated[int, Field(ge=1, le=200)] = 50,
+    ) -> dict:
+        """Search calendar events."""
+        return call(caltools.search_calendar, query, date_from=date_from, date_to=date_to,
+                    timezone_name=timezone, limit=limit)
+
+    @server.tool(annotations=READ_ONLY)
+    def calendar_freebusy(
+        start: str,
+        end: str | None = None,
+        working_hours: Annotated[str, Field(description="e.g. 09:00-17:00")] = "09:00-17:00",
+        weekdays: Annotated[str, Field(description="e.g. MO-FR or MO,TU,TH")] = "MO-FR",
+        timezone: TzParam = None,
+        include_tentative: bool = True,
+    ) -> dict:
+        """My own busy blocks and free time within working hours. Other people's calendars are not available."""
+        return call(caltools.calendar_freebusy, start, end, working_hours=working_hours, weekdays=weekdays,
+                    timezone_name=timezone, include_tentative=include_tentative)
+
+    @server.tool(annotations=READ_ONLY)
+    def find_free_slots(
+        duration_minutes: Annotated[int, Field(ge=5, le=1440)],
+        start: str,
+        end: str | None = None,
+        working_hours: str = "09:00-17:00",
+        weekdays: str = "MO-FR",
+        timezone: TzParam = None,
+        step_minutes: Annotated[int, Field(ge=5, le=240)] = 30,
+        max_results: Annotated[int, Field(ge=1, le=100)] = 20,
+    ) -> dict:
+        """Find free slots of a given length in my own calendar."""
+        return call(caltools.find_free_slots, duration_minutes, start, end, working_hours=working_hours,
+                    weekdays=weekdays, timezone_name=timezone, step_minutes=step_minutes, max_results=max_results)
+
+    @server.tool(annotations=READ_ONLY)
+    def meeting_prep(
+        event_id: str,
+        days_back: Annotated[int, Field(ge=1, le=730)] = 90,
+        max_threads: Annotated[int, Field(ge=1, le=50)] = 10,
+        timezone: TzParam = None,
+    ) -> dict:
+        """Prepare for a meeting: event details, attendees, and recent email threads with them or on the topic."""
+        return call(caltools.meeting_prep, event_id, days_back=days_back, max_threads=max_threads,
+                    timezone_name=timezone)
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                             idempotent_hint=False, open_world_hint=False))
+    def create_event_draft(
+        subject: str,
+        start: Annotated[str, Field(description="YYYY-MM-DDTHH:MM (local) or YYYY-MM-DD for all-day")],
+        end: Annotated[str | None, Field(description="End time; for all-day events the last day. Default: 1 hour")] = None,
+        all_day: bool = False,
+        location: str | None = None,
+        body: str | None = None,
+        attendees: list[str] | None = None,
+        timezone: TzParam = None,
+    ) -> dict:
+        """EXPERIMENTAL. Open a new-event draft (.ics) in Outlook for the user to review and save.
+        It does not add, change or delete anything in the calendar and sends no invitations."""
+        try:
+            return caltools.create_event_draft(subject=subject, start=start, end=end, timezone_name=timezone,
+                                               all_day=all_day, location=location, body=body, attendees=attendees)
+        except tools.ToolInputError as exc:
+            raise ToolError(str(exc)) from exc
+
     @server.tool(annotations=READ_ONLY)
     def list_folders() -> dict:
         """List folders with message counts and date ranges."""
@@ -131,10 +229,10 @@ def build_server(db_path: Path | None = None) -> MCPServer:
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=True, open_world_hint=False))
-    def sync_now(source: Literal["legacy", "hxstore", "all"] = "all") -> dict:
-        """Import new mail from local Outlook files into the archive. Reads copies of Outlook's
-        files only and never contacts a server."""
-        names = ["legacy", "hxstore"] if source == "all" else [source]
+    def sync_now(source: Literal["legacy", "hxstore", "ics", "all"] = "all") -> dict:
+        """Import new mail and calendar data from local Outlook files into the archive. Reads copies of
+        Outlook's files only. The one network access is the user's own published ICS feeds, if configured."""
+        names = ["legacy", "hxstore", "ics"] if source == "all" else [source]
         results = sync(archive(), names)
         return {"results": [r.as_dict() for r in results]}
 

@@ -27,7 +27,7 @@ def cli_executable() -> list[str]:
     return [sys.executable, "-m", "outlook_archive_mcp.cli"]
 
 
-def build_plist(*, interval_hours: float = DEFAULT_INTERVAL_HOURS, source: str = "hxstore",
+def build_plist(*, interval_hours: float = DEFAULT_INTERVAL_HOURS, source: str = "hxstore,ics",
                 program: list[str] | None = None) -> dict:
     logs = paths.log_dir()
     env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}

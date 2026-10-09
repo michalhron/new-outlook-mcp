@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     merged INTEGER NOT NULL DEFAULT 0,
     skipped INTEGER NOT NULL DEFAULT 0,
     errors INTEGER NOT NULL DEFAULT 0,
+    events_seen INTEGER NOT NULL DEFAULT 0,
+    events_inserted INTEGER NOT NULL DEFAULT 0,
     message TEXT,
     snapshot_dir TEXT
 );
@@ -114,6 +116,96 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     subject, sender, recipients, body,
     tokenize = 'unicode61 remove_diacritics 2'
+);
+
+-- Calendar ---------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS calendars (
+    id INTEGER PRIMARY KEY,
+    account_id INTEGER REFERENCES accounts(id),
+    name TEXT NOT NULL,
+    UNIQUE (account_id, name)
+);
+
+-- One row per series master, single event, or modified occurrence
+-- (recurrence_id set). Deduplicated by UID + recurrence id.
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    dedup_key TEXT NOT NULL UNIQUE,
+    uid TEXT,
+    recurrence_id TEXT,
+    subject TEXT,
+    start_ts INTEGER,
+    end_ts INTEGER,
+    start_utc TEXT,
+    end_utc TEXT,
+    tzid TEXT,
+    all_day INTEGER NOT NULL DEFAULT 0,
+    location TEXT,
+    organizer_name TEXT,
+    organizer_addr TEXT,
+    body_text TEXT,
+    online_meeting_url TEXT,
+    rrule TEXT,
+    rdates_json TEXT NOT NULL DEFAULT '[]',
+    exdates_json TEXT NOT NULL DEFAULT '[]',
+    my_response TEXT,
+    busy_status TEXT,
+    is_cancelled INTEGER NOT NULL DEFAULT 0,
+    calendar_id INTEGER REFERENCES calendars(id),
+    first_source TEXT NOT NULL,
+    source_priority INTEGER NOT NULL DEFAULT 0,
+    imported_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_uid ON events(uid);
+CREATE INDEX IF NOT EXISTS idx_events_start ON events(start_ts);
+
+CREATE TABLE IF NOT EXISTS event_sources (
+    source TEXT NOT NULL,
+    source_key TEXT NOT NULL,
+    event_pk INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (source, source_key)
+);
+CREATE INDEX IF NOT EXISTS idx_esrc_pk ON event_sources(event_pk);
+
+CREATE TABLE IF NOT EXISTS attendees (
+    id INTEGER PRIMARY KEY,
+    event_pk INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    name TEXT,
+    addr TEXT,
+    role TEXT,
+    response TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_att_event ON attendees(event_pk);
+CREATE INDEX IF NOT EXISTS idx_att_addr ON attendees(addr);
+
+-- Concrete occurrences, recomputed from events after every calendar import.
+CREATE TABLE IF NOT EXISTS event_instances (
+    id INTEGER PRIMARY KEY,
+    event_pk INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    start_ts INTEGER NOT NULL,
+    end_ts INTEGER NOT NULL,
+    occurrence_key TEXT NOT NULL,
+    is_exception INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_inst_range ON event_instances(start_ts, end_ts);
+CREATE INDEX IF NOT EXISTS idx_inst_event ON event_instances(event_pk);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
+    subject, location, people, body,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
+-- HTTP cache state for published ICS feeds. Keyed by a hash of the URL;
+-- the URL itself is stored only in the 0600 config file.
+CREATE TABLE IF NOT EXISTS feed_state (
+    feed_key TEXT PRIMARY KEY,
+    etag TEXT,
+    last_modified TEXT,
+    fetched_at TEXT
 );
 """
 
@@ -329,11 +421,13 @@ class Archive:
         return cur.lastrowid
 
     def finish_run(self, run_id: int, *, status: str, seen: int = 0, inserted: int = 0, merged: int = 0,
-                   skipped: int = 0, errors: int = 0, message: str | None = None) -> None:
+                   skipped: int = 0, errors: int = 0, message: str | None = None, events_seen: int = 0,
+                   events_inserted: int = 0) -> None:
         self.conn.execute(
             """UPDATE sync_runs SET finished_at = ?, status = ?, seen = ?, inserted = ?, merged = ?,
-                   skipped = ?, errors = ?, message = ? WHERE id = ?""",
-            (_now(), status, seen, inserted, merged, skipped, errors, message, run_id),
+                   skipped = ?, errors = ?, message = ?, events_seen = ?, events_inserted = ? WHERE id = ?""",
+            (_now(), status, seen, inserted, merged, skipped, errors, message, events_seen, events_inserted,
+             run_id),
         )
         self.conn.commit()
 
@@ -352,12 +446,22 @@ class Archive:
             "folders": q("SELECT COUNT(*) FROM folders"),
             "accounts": q("SELECT COUNT(*) FROM accounts"),
             "attachments": q("SELECT COUNT(*) FROM attachments"),
+            "events": q("SELECT COUNT(*) FROM events"),
+            "event_instances": q("SELECT COUNT(*) FROM event_instances"),
         }
 
     def coverage(self) -> list[dict]:
         rows = self.conn.execute(
             """SELECT s.source, COUNT(*) AS n, MIN(m.date_utc) AS first, MAX(m.date_utc) AS last
                FROM message_sources s JOIN messages m ON m.id = s.message_pk
+               GROUP BY s.source ORDER BY s.source"""
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def calendar_coverage(self) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT s.source, COUNT(*) AS n, MIN(e.start_utc) AS first, MAX(e.start_utc) AS last
+               FROM event_sources s JOIN events e ON e.id = s.event_pk
                GROUP BY s.source ORDER BY s.source"""
         ).fetchall()
         return [dict(r) for r in rows]

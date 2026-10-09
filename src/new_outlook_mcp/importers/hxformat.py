@@ -70,6 +70,23 @@ class HxStoreFormatError(RuntimeError):
     """The file is not a supported HxStore. Signals format drift."""
 
 
+class HxStoreLayoutError(HxStoreFormatError):
+    """Objects of a known class have a fixed-region size we have not verified.
+
+    Raised instead of guessing: field offsets are only valid for the sizes in
+    EXPECTED_FS. An Outlook update that changes a layout must be looked at.
+    """
+
+    def __init__(self, mismatches: dict[tuple[int, int], int]):
+        self.mismatches = dict(mismatches)
+        parts = ", ".join(
+            f"class {c:#x}: size {fs:#x} x{n} (expected {EXPECTED_FS[c]:#x})"
+            for (c, fs), n in sorted(self.mismatches.items())
+        )
+        super().__init__(f"HxStore layout changed, refusing to import ({parts}). "
+                         "Outlook was probably updated; the decoder needs new offsets.")
+
+
 # ------------------------------------------------------------------- LZ4
 
 class LZ4Error(ValueError):
@@ -140,6 +157,14 @@ class BlockStats:
     valid: int = 0
     crc_failed: int = 0
     decode_failed: int = 0
+
+    @property
+    def failed(self) -> int:
+        return self.crc_failed + self.decode_failed
+
+    @property
+    def failed_ratio(self) -> float:
+        return self.failed / self.found if self.found else 1.0
 
 
 def _open(path: Path):
@@ -266,7 +291,7 @@ def iter_objects(d, block_stats: BlockStats, classes: set[int], obj_stats: Objec
                 continue
             want = EXPECTED_FS.get(cls)
             if want is not None and fs != want:
-                obj_stats.layout_mismatch[cls] += 1
+                obj_stats.layout_mismatch[(cls, fs)] += 1
                 continue
             obj_stats.by_class[cls] += 1
             stamp, = struct.unpack_from("<Q", x, p + 0x70)
@@ -279,7 +304,9 @@ class Store:
     CLASSES = {C_ACCOUNT, C_MAIL_ACCOUNT, C_FOLDER, C_RECIPIENT, C_CALENDAR, C_EVENT, C_EVENT_DETAIL,
                C_MESSAGE, C_BODY, C_FILE, C_ATTACHMENT}
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, strict: bool = True):
+        """Decode `path`. With `strict` (the default), raise HxStoreLayoutError when any
+        object of a known class has an unverified fixed-region size."""
         self.path = Path(path)
         self.blocks = BlockStats()
         self.objects = ObjectStats(collections.Counter(), collections.Counter())
@@ -291,6 +318,14 @@ class Store:
                 self.by_class[ob.cls][ob.id].append(ob)
         finally:
             d.close()
+        if strict and self.objects.layout_mismatch:
+            raise HxStoreLayoutError(self.objects.layout_mismatch)
+
+    def object_counts(self) -> dict[str, int]:
+        """Distinct objects per class we use (copies collapsed)."""
+        names = {C_MESSAGE: "messages", C_ATTACHMENT: "attachments", C_EVENT: "events", C_FOLDER: "folders",
+                 C_RECIPIENT: "recipients", C_BODY: "bodies", C_ACCOUNT: "accounts", C_CALENDAR: "calendars"}
+        return {name: len(self.by_class[c]) for c, name in names.items()}
 
     def copies(self, cls: int, oid: int) -> list[Obj]:
         return self.by_class[cls].get(oid, [])

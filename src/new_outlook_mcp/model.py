@@ -4,7 +4,33 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+#: Dates before this are treated as missing.
+EARLIEST_PLAUSIBLE = datetime(1990, 1, 1, tzinfo=timezone.utc)
+#: Outlook stores 2032-01-02 00:00 as a "no date" sentinel on some drafts and deleted items.
+#: Anything more than this far in the future is treated as missing.
+FUTURE_SLACK = timedelta(days=1)
+
+
+def plausible_date(dt: datetime | None, now: datetime | None = None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if dt < EARLIEST_PLAUSIBLE or dt > now + FUTURE_SLACK:
+        return None
+    return dt
+
+
+def first_plausible(*candidates: datetime | None) -> datetime | None:
+    """The first candidate that is a believable message date."""
+    for dt in candidates:
+        ok = plausible_date(dt)
+        if ok is not None:
+            return ok
+    return None
 
 
 @dataclass

@@ -378,6 +378,7 @@ class HxMessage:
     cc: list[tuple[str | None, str | None]]
     date_sent: datetime | None
     date_received: datetime | None
+    last_modified: datetime | None
     folder: str | None
     folder_type: str | None
     account: str | None
@@ -457,6 +458,7 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
             cc=[r for _, r in sorted(rc.get("cc", []))],
             date_sent=ticks(ob.u64(0x2D8)),
             date_received=ticks(ob.u64(0x120)),
+            last_modified=ticks(ob.u64(0x178)),
             folder=fname,
             folder_type=ftype,
             account=mail_accounts.get(ob.owner),

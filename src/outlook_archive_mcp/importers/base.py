@@ -6,8 +6,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..model import MessageRecord
+
+if TYPE_CHECKING:
+    from ..calendar_store import EventRecord
 
 
 @dataclass
@@ -55,3 +59,18 @@ class Importer(ABC):
     @abstractmethod
     def iter_records(self, snapshot: Path, *, skip_keys: set[str]) -> Iterator[MessageRecord]:
         """Yield normalized records. Update `self.stats` while iterating."""
+
+    #: When True, zero calendar events after earlier non-zero runs is flagged as drift.
+    expect_events: bool = False
+
+    def bind(self, archive) -> None:
+        """Give the importer read access to the archive (e.g. for HTTP cache state)."""
+        self.archive = archive
+
+    def iter_events(self, snapshot: Path) -> Iterator["EventRecord"]:
+        """Yield calendar events. Events are always re-read: they change."""
+        return iter(())
+
+    def finish_events(self, archive, seen_keys: set[str]) -> int:
+        """Called after all events were stored, inside a transaction. Returns events removed."""
+        return 0

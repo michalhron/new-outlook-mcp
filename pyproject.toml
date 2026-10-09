@@ -12,6 +12,9 @@ requires-python = ">=3.12"
 authors = [{ name = "Michal Hron" }]
 dependencies = [
     "mcp>=2.2,<3",
+    # calendar
+    "icalendar>=6",
+    "python-dateutil>=2.9",
     # attachment text extraction
     "pypdf>=4",
     "python-docx>=1.1",

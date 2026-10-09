@@ -133,6 +133,18 @@ def test_missing_mail_table_is_an_error(archive, tmp_path):
     assert res.status == "error" and "Mail table" in res.message
 
 
+def test_olk15_key_byte_order_matches_pyolk():
+    # pyolk prints the entry bytes 01 00 00 1F as "1F:01" (subject) and 33 01 00 4D as "4D:3301".
+    import struct
+
+    entries = [(b"\x01\x00\x00\x1f", b"AB"), (b"\x33\x01\x00\x4d", b"CD"), (b"\x74\x7a\x46\x43", b"EF")]
+    head = struct.pack("<3i", len(entries), 12 + 8 * len(entries), 6)
+    head += b"".join(k + struct.pack("<i", 2) for k, _ in entries)
+    props = olk15.parse_collection(head + b"ABCDEF")
+    assert props == {(0x1F, 0x01): b"AB", (0x4D, 0x3301): b"CD", (0x4643, 0x7A74): b"EF"}
+    assert olk15.encode_key(0x1F, 0x01) == b"\x01\x00\x00\x1f"
+
+
 def test_olk15_collection_roundtrip():
     from synthetic import entity_file, utf16z
 

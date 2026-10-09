@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import launchd, paths
@@ -55,6 +55,14 @@ def cmd_sync(args) -> int:
         events = f" events={r.events_seen} new_events={r.events_inserted}" if r.events_seen or r.events_removed else ""
         print(f"{stamp} [{r.source}] {r.status}: seen={r.seen} new={r.inserted} merged={r.merged} "
               f"skipped={r.skipped} errors={r.errors}{events}" + (f" | {r.message}" if r.message else ""))
+        if r.details:
+            d = r.details
+            if "blocks_found" in d:
+                print(f"  blocks ok={d['blocks_ok']} crc_failed={d['blocks_crc_failed']} "
+                      f"decode_failed={d['blocks_decode_failed']} of {d['blocks_found']} "
+                      f"(copies taken: {d.get('copy_attempts', 1)}, hxcore.hfl copied: {d.get('hxcore_hfl_copied')})")
+            if "objects" in d:
+                print("  objects " + " ".join(f"{k}={v}" for k, v in d["objects"].items()))
         if r.snapshot_dir:
             print(f"  snapshot kept at {r.snapshot_dir}")
         explicit = args.source != "all"
@@ -74,7 +82,29 @@ def cmd_snapshot(args) -> int:
         dest = new_snapshot_dir(name, args.dest)
         imp.snapshot(dest)
         print(f"[{name}] {dest}")
+        if name == "hxstore":
+            d = imp.details
+            print(f"  blocks ok={d.get('blocks_ok')} failed={d.get('blocks_crc_failed', 0) + d.get('blocks_decode_failed', 0)}"
+                  f" of {d.get('blocks_found')}; hxcore.hfl copied: {d.get('hxcore_hfl_copied')}")
+            files = imp.source_path.parent / "Files"
+            if files.is_dir():
+                n = _write_files_listing(files, dest / "files-listing.tsv")
+                print(f"  Files/ listing: {n} files -> {dest / 'files-listing.tsv'}")
     return 0
+
+
+def _write_files_listing(root: Path, out: Path) -> int:
+    """Path (relative to Files/), size and mtime of every cached file. Reads metadata only."""
+    n = 0
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write("path\tsize\tmtime_utc\n")
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                st = p.stat()
+                mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+                fh.write(f"{p.relative_to(root)}\t{st.st_size}\t{mtime}\n")
+                n += 1
+    return n
 
 
 def cmd_backup_legacy(args) -> int:
@@ -173,6 +203,25 @@ def cmd_calendar(args) -> int:
     return 2
 
 
+def cmd_coverage(args) -> int:
+    from datetime import date
+
+    from . import coverage
+
+    if args.hxstore:
+        rows = coverage.rows_from_hxstore(args.hxstore)
+    else:
+        if not Path(args.db).exists():
+            print(f"no archive yet at {args.db}. Run `new-outlook sync` first, or pass --hxstore PATH.")
+            return 1
+        with Archive(args.db, readonly=True) as archive:
+            rows = coverage.rows_from_archive(archive, None if args.source == "all" else args.source)
+    summary = coverage.summarize(rows, weeks=args.weeks, days=args.days,
+                                 until=date.fromisoformat(args.until) if args.until else None)
+    print(coverage.to_json(summary) if args.json else coverage.render(summary))
+    return 0
+
+
 def cmd_serve(args) -> int:
     from .server import build_server
 
@@ -225,6 +274,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", choices=["list-feeds", "add-feed", "remove-feed", "set-my-addresses"])
     s.add_argument("name", nargs="?", help="feed name, or comma-separated addresses for set-my-addresses")
     s.set_defaults(func=cmd_calendar)
+
+    s = sub.add_parser("coverage", help="message counts per account and folder by received week and day")
+    s.add_argument("--source", choices=["hxstore", "legacy", "all"], default="hxstore",
+                   help="which archived source to count (default: hxstore)")
+    s.add_argument("--hxstore", type=Path, help="count a copy of HxStore.hxd directly instead of the archive")
+    s.add_argument("--weeks", type=int, default=12)
+    s.add_argument("--days", type=int, default=30)
+    s.add_argument("--until", help="anchor date YYYY-MM-DD (default: newest message)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_coverage)
 
     s = sub.add_parser("serve", help="run the MCP server on stdio")
     s.set_defaults(func=cmd_serve)

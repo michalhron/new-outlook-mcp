@@ -14,7 +14,7 @@ Offsets are hexadecimal. "+x" offsets in the object sections count from the firs
 
 ## Status
 
-The importer reads messages, recipients, folders, accounts, attachments (metadata plus a path to the cached file) and calendar events. On the sample it decoded 948 message objects (943 after Message-ID dedup), 731 attachment records and 197 events, with no decode errors and in about 5 seconds.
+The importer reads messages, recipients, folders, accounts, attachments (metadata plus a path to the cached file) and calendar events. On the sample it decoded 948 message objects (943 after Message-ID dedup), 731 attachment records and 197 events, with no decode errors and in about 5 seconds. It works on live copies taken while Outlook runs, and it stops with an error when a class layout differs from the table below.
 
 | Field | Fill rate on the sample | Confidence |
 |---|---|---|
@@ -60,6 +60,8 @@ All V. The payload is a raw LZ4 block without a frame. A strict decoder (exact o
 
 This corrects the public spec, which assumes a fixed 40-byte header. That assumption breaks every 16-byte-key block.
 
+**Cross-check with hxprobe (V).** ukd1's `hxprobe` (MIT, reviewed before running: no network access, no build script, read-only memory map) was built and run on a copy of the sample. It finds the same 5,531 blocks. It rejects 18, while we reject 4. The 4 that fail the header CRC fail in both tools. The extra 14 are exactly the 16-byte-key blocks: hxprobe always starts the payload at +0x28, so its payload CRC range ends 8 bytes short. Neither tool had an LZ4 failure. hxprobe reports 2,433 "messages" because it cuts records between UTF-16 `IPM.Note` strings and merges them by sender and time. That counts revisions and non-message hits. Our 948 come from typed 0xc9 objects (see list items below).
+
 Most objects exist in several copies (older versions in other blocks). The importer takes the copy with the highest change stamp and fills missing fields from older copies.
 
 ## Objects
@@ -100,8 +102,46 @@ Inside an inflated payload each object is preceded by a u32 length and often fol
 | 0xca | 0x740 | message body |
 | 0xf7 | 0xc5 | file reference |
 | 0x16a | 0x318 | attachment |
+| 0x4f | 0x430 | per-folder message list item (not imported) |
 
-The importer only parses objects whose fs matches this table. An object of a known class with a different fs is skipped and reported as possible format drift, which triggers the sync notification.
+**Layout guard.** Field offsets are known only for the sizes in this table. If any object of a listed class has a different fs, the import stops with an error that names the class, the found size and the expected size. Nothing is imported from that store, and the sync notification fires. The importer does not guess offsets for a changed layout. After an Outlook update triggers this, the offsets for the new size must be checked on a fresh snapshot.
+
+**List items (class 0x4f).** The sample has 644 list items and 948 message objects. 641 of the list items reference an existing 0xc9 message through typed references at +0x11a (id at +0x124) and further ones at +0x12e, +0x14a and +0x15e. (C) So list items do not reveal messages whose full object is missing. On this sample, the 0xc9 objects are the complete message set.
+
+## Live copies (scheduled sync)
+
+The scheduled sync cannot quit Outlook, so it copies `HxStore.hxd` and `hxcore.hfl` while Outlook may be writing to them.
+
+- Each block carries two CRC-32s. A block caught mid-write fails one of them and is skipped. Most objects exist in two or three copies in other blocks, and the importer keeps the newest copy that decoded. One torn block therefore rarely loses an object. At worst, the latest change to that object is missing until the next sync.
+- A quiet store has about 0.1% failed blocks (4 of 5,531 on the sample). When more than 2% fail (and at least 5 blocks), the importer waits 2 seconds, copies again and keeps the better copy. If the second copy is also bad, the sync goes ahead and reports a warning.
+- Each sync records its numbers in `sync_runs.details_json` and prints them: blocks found, ok, CRC-failed and LZ4-failed, copies taken, whether `hxcore.hfl` was copied, and distinct objects per class. New and merged messages are in the normal sync counts.
+- `hxcore.hfl` is copied next to the store copy but not parsed yet (see below).
+
+## Cache coverage
+
+`new-outlook coverage` counts messages per account and folder, per week (last 12) and per day (last 30). It works on the archive or directly on a copy of `HxStore.hxd` (`--hxstore PATH`), and prints counts only.
+
+What the sample shows (aggregates only):
+
+- Dense coverage spans about the last 8 to 9 weeks before the snapshot, in every main folder at once (Archive, Sent Items, Deleted Items). Earlier weeks hold only scattered messages, back about a year in Archive. The scattered older ones fit the "filled on demand" behaviour: opened, searched or scrolled to. The cache window here is shorter than the 180 days often quoted.
+- In the last 30 days, the main archive folder has mail on every weekday, up to the day of the snapshot. Inbox is small because mail is archived out of it, so its weekday gaps do not mean much.
+- This fits new mail landing in the cache as it arrives, but does not prove it: messages could also have been opened. The "new mail, not clicked" step of the snapshot pair below settles it.
+
+Consequence for the sync plan: every 36 hours is well inside an 8-week window. The archive keeps everything it has seen, so older messages that drop out of the cache remain searchable.
+
+## hxcore.hfl: write-ahead log or not?
+
+The sample did not include `hxcore.hfl`. Public notes say it is about 50 MB and starts with `08 00 00 00 00 00 01 00`, and none decode it. If it is a write-ahead log, recent changes could sit there before they reach `HxStore.hxd`, and a sync that reads only the store would lag behind.
+
+Plan for the snapshot pair (structure only, on copies):
+
+1. Size and mtime. List both files before and after a new message arrives. If `hxcore.hfl` grows or changes first and `HxStore.hxd` only later (or after Outlook quits), that is log behaviour.
+2. Block magic. Search `hxcore.hfl` for the block magic `05 6a 70 3b 64 45 02 5d`. If it holds whole CRC-valid blocks, run the same block decoder over it and compare object ids and change stamps with the store.
+3. Probe object. Find the probe message's id in the "after" copy (by its synthetic subject). Check where its newest copy lives: only in `hxcore.hfl`, only in `HxStore.hxd`, or both.
+4. Stamps. For objects in both files, compare the +0x70 change stamps. Higher stamps in `hxcore.hfl` mean it holds newer versions the store does not have yet.
+5. Rollover. Note whether `hxcore.hfl` shrinks or resets after Outlook quits or after some time (a checkpoint).
+
+If it is a log with valid blocks, the importer can decode it like the store and prefer the higher stamp per object. The copy step already captures both files from the same moment.
 
 ## Messages (class 0xc9)
 
@@ -198,22 +238,31 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 - About 16% of payload bytes lie outside recognised objects.
 - What `hxcore.hfl` holds, and whether recent changes sit there before reaching HxStore.hxd. The importer ignores it.
 
-## Experiments to run locally
+## Snapshot pair protocol
 
-Use synthetic content only (made-up subjects, a test PDF). Quit Outlook before each copy and copy `HxStore.hxd` and `Files/` together. `new-outlook snapshot --source hxstore --dest /tmp/hx-before` makes the copy. Then diff two snapshots by class, id and fixed-region bytes.
+One "before" and one "after" snapshot answer most open questions at once. Use synthetic content only (made-up subjects, a small test PDF).
 
-1. **Attachment mapping.** Send yourself a message with subject `HXPROBE-A1-<random>`, one Cc and one Bcc address, and a small PDF of known size. Open it so Outlook downloads the PDF. Snapshot. Then run:
-   `find "$PROFILE/Files" -type f -newer /tmp/hx-before -exec ls -l {} \;`
-   This shows the new file under `Files/S0/<n>/Attachments/0/`. Check that its size equals the attachment size and that `new-outlook sync --source hxstore` reports it as available. The Sent Items copy will show whether Bcc has its own recipient kind.
-2. **Read state, flags, importance.** Mark that message read, then unread, then flagged, then high importance, with a snapshot after each step. The byte that changes each time is the field.
-3. **Inline image.** Send an HTML message with an embedded image. The inline flag (+0x2b0 = 2) should be set, and the has-attachment bit should stay clear.
-4. **Recurrence.** Create `HXPROBE-R1` events: every 2 days until a date, monthly on the 2nd Tuesday, weekly on Monday, Wednesday and Friday. Delete one occurrence and move another. Diff area one of each master and look for new occurrence or exception objects.
-5. **Responses.** From a second account, send three invitations. Accept one, decline one, mark one tentative. Check +0x3e0 and the attendee records.
-6. **Large bodies.** Check that `Files/S0/<n>/EFMData/*.dat` files are gzip: `file Files/S0/*/EFMData/*.dat | head`.
-7. **Header.** Diff bytes 0 to 0x80 and the region at 0x3000 across two snapshots.
+1. **Before.** Note the message counts Outlook shows for the last 7 days in Inbox and Sent Items. Then, with Outlook running:
+   `new-outlook snapshot --source hxstore --dest ~/hx-snapshots`
+   This copies `HxStore.hxd` and `hxcore.hfl`, decodes the copy, prints block stats, and writes `files-listing.tsv` (path, size, mtime of everything in `Files/`). Also run `new-outlook coverage --hxstore <snapshot>/attempt1/HxStore.hxd > coverage-before.txt`.
+2. **New mail, not clicked.** From another account (or a phone), send a message with subject `HXPROBE-N1-<random>` to yourself. Leave Outlook open and do not click it or its folder. Wait until it shows as unread.
+3. **Cc, Bcc, PDF.** Send yourself `HXPROBE-A1-<random>` with one Cc address, one Bcc address and a small PDF of known size. Open it once so Outlook downloads the PDF.
+4. **Recurring event.** Create `HXPROBE-R1` repeating every 2 days until a date, `HXPROBE-R2` monthly on the 2nd Tuesday, and `HXPROBE-R3` weekly on Monday, Wednesday and Friday. Delete one occurrence of R3 and move another.
+5. **After.** Run the same `snapshot` and `coverage` commands into the same folder, then `ls -l` both snapshots' `hxcore.hfl` and `HxStore.hxd`.
+
+What each step answers:
+
+- Coverage: Outlook's 7-day counts against `coverage` for the same folders and days.
+- New mail: whether `HXPROBE-N1` appears in the "after" store without being opened, and whether it is in `HxStore.hxd`, in `hxcore.hfl`, or only after a later copy.
+- Attachments: the PDF's line in `files-listing.tsv` (path, size) against the attachment record's file reference and size. The Sent Items copy shows whether Bcc has its own recipient kind.
+- Recurrence: the area-one bytes of the three masters, and any occurrence or exception objects.
+- `hxcore.hfl`: steps 1 to 5 in the section above.
+
+Further experiments, each with its own before/after pair: toggle read, flag and importance on one message (read state and flags); send an HTML message with an embedded image (inline flag); accept, decline and tentatively accept three invitations from a second account (response codes); run `file Files/S0/*/EFMData/*.dat | head` (gzip bodies).
 
 ## Safety notes
 
 - The importer parses only a private copy (`snapshot`). It reads `Files/` in place, read-only, and never writes under the Outlook profile.
+- `files-listing.tsv` contains attachment file names. Keep snapshots outside the repository.
 - Keep real stores, extracts and logs out of git. `.gitignore` blocks `*.hxd`, `*.hxd.zip`, `*.hfl` and `*.olk15*`. Test fixtures are synthetic (`tests/hxsynth.py` writes a store from made-up objects).
 - On macOS, reading the Group Containers folder may need Full Disk Access for the process that runs the sync.

@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     errors INTEGER NOT NULL DEFAULT 0,
     events_seen INTEGER NOT NULL DEFAULT 0,
     events_inserted INTEGER NOT NULL DEFAULT 0,
+    details_json TEXT,
     message TEXT,
     snapshot_dir TEXT
 );
@@ -422,12 +423,13 @@ class Archive:
 
     def finish_run(self, run_id: int, *, status: str, seen: int = 0, inserted: int = 0, merged: int = 0,
                    skipped: int = 0, errors: int = 0, message: str | None = None, events_seen: int = 0,
-                   events_inserted: int = 0) -> None:
+                   events_inserted: int = 0, details: dict | None = None) -> None:
         self.conn.execute(
             """UPDATE sync_runs SET finished_at = ?, status = ?, seen = ?, inserted = ?, merged = ?,
-                   skipped = ?, errors = ?, message = ?, events_seen = ?, events_inserted = ? WHERE id = ?""",
+                   skipped = ?, errors = ?, message = ?, events_seen = ?, events_inserted = ?,
+                   details_json = ? WHERE id = ?""",
             (_now(), status, seen, inserted, merged, skipped, errors, message, events_seen, events_inserted,
-             run_id),
+             json.dumps(details) if details else None, run_id),
         )
         self.conn.commit()
 

@@ -136,7 +136,7 @@ new-outlook launchd uninstall
 
 Options: `--interval-hours 36`, `--source` with one source or a comma list (default `hxstore,ics`). Logs go to `~/Library/Logs/new-outlook-mcp/sync.log`.
 
-The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when it meets objects with an unknown layout. That second case usually means Outlook changed its file format.
+The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when HxStore objects have a layout it does not know. The last two usually mean an Outlook update changed the file format.
 
 ## How it stays read-only
 
@@ -213,8 +213,11 @@ What to expect:
 - The cache holds only what New Outlook has synced, about the last 180 days. Some messages keep only a preview of about 255 characters. Those show the preview as the body.
 - Bodies too large for the store, and all attachment files, live under `Main Profile/Files/`. They are read in place. An attachment Outlook has not downloaded is listed with `available_locally: false`.
 - Every sync re-reads the whole cache, because messages move between folders and attachments get downloaded later. Merging makes this idempotent.
+- The sync copies `HxStore.hxd` and `hxcore.hfl` while Outlook runs. Blocks caught mid-write fail their checksums and are skipped, and older copies of the same objects fill in. If more than 2% of blocks fail, it copies once more. Each sync prints and stores its numbers: blocks ok and failed, objects per class, new messages.
 - Only weekly recurrence is decoded so far. Other recurring series show their first occurrence only, and the sync notes count them.
-- The importer checks the format version and the fixed object sizes per class. After an Outlook update that changes the layout, it skips the unknown objects, reports possible format drift, and the LaunchAgent shows a notification.
+- The importer checks the format version and the fixed object size of every class it reads. If an Outlook update changes a layout, the import stops with an error naming the class and the sizes, imports nothing from that store, and the LaunchAgent shows a notification. It never guesses offsets.
+- `new-outlook coverage` shows message counts per account and folder by week and by day, from the archive or straight from a copy (`--hxstore PATH`). Use it to see how far back the cache reaches and whether recent days have gaps.
+- `new-outlook snapshot --source hxstore --dest DIR` keeps a decoded copy plus `files-listing.tsv` for before/after experiments. The listing contains attachment file names, so keep `DIR` outside the repository.
 - Read state, flags and Bcc are not decoded yet.
 
 ## Development

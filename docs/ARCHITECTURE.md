@@ -4,16 +4,7 @@ This page is for people who want to change the code. [getting-started.md](gettin
 
 ## Data flow
 
-```
-sources ─► snapshot (private copy) ─► importer ─► sync.run_import ─► archive.db ─► tools / caltools / semantic ─► server.py (MCP) and cli.py
-                                         │              │
-                                         │              ├─ privacy filter (drop excluded records)
-                                         │              ├─ Archive.upsert / calendar_store.upsert_event (dedup + merge)
-                                         │              ├─ finish_files (orphan files), finish_events (feed pruning)
-                                         │              ├─ rebuild_instances (recurrence expansion)
-                                         │              └─ embed new mail (if search by meaning is set up)
-                                         └─ yields MessageRecord / EventRecord
-```
+<p align="center"><img src="assets/architecture.svg" alt="sources, snapshot, importer, sync.run_import, archive.db, tools, server.py and cli.py. run_import applies the privacy filter, upsert, finish_files and finish_events, rebuild_instances and embedding." width="100%"></p>
 
 Triggers: `new-outlook sync`, the MCP tool `sync_now`, the watcher (`watch.py`, near-live) and the 36-hour LaunchAgent (`launchd.py`).
 

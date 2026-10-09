@@ -674,6 +674,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    # pypdf warns about every repairable defect in a PDF attachment ("Ignoring wrong pointing object").
+    # The text is still read, so these only bury progress output; -v shows them.
+    if not args.verbose:
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
     return args.func(args)
 
 

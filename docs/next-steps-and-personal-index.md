@@ -16,7 +16,7 @@ Notes from the 2026-10-09 test-and-fix session. Not committed plan (that is [ROA
 
 **Fixed today** (PRs #16, #17): schema migrations; merged mail belongs to both realms; footers/banners and punctuation-only lines left out of embeddings; function words dropped from hybrid keyword search; pypdf warnings quieted; cross-encoder reranker over the top 50 results.
 
-**Measured today** (12 descriptive queries with a known answer, full archive, hybrid mode). Keep this set as a regression benchmark; the queries are in the PR #17 description and below.
+**Measured today** (12 descriptive queries with a known answer, full archive, hybrid mode). Keep this set as a regression benchmark (see below for where the queries live).
 
 | | right email #1 | top 5 | top 10 | s/search |
 |---|---|---|---|---|
@@ -28,14 +28,7 @@ Notes from the 2026-10-09 test-and-fix session. Not committed plan (that is [ROA
 - multilingual-e5-base instead of e5-small: median rank 253 → 171, top 10 unchanged, 3× slower to embed. Not adopted (model deleted).
 - e5-small scores almost everything between 0.79 and 0.87, so pure vector search cannot separate short transactional mail (invoices, receipts) from the rest.
 
-Benchmark queries (target message id → query):
-- 9225 Quinetics invoice: "payment request for personal training and a nutrition app", "how much did I pay for coaching in August", "rekening voor personal training en voedingsapp"
-- 964 Cursor refund: "money returned by a code editor subscription", "refund for an AI programming tool"
-- 4733 UMinho order: "paid the registration fee for international week at a Portuguese university", "bevestiging betaling inschrijving internationale week Portugal", "receipt for a 240 euro conference week order"
-- 1223 DISS registration: "ticket for the Dutch information systems symposium", "registration confirmation for a Dutch IS conference with a 50 euro ticket"
-- 4779 PhD defence procedure: "rules for the internal PhD defence", "what do I have to do for a doctoral thesis defense procedure"
-
-(Message ids are specific to the current archive.db; a rebuilt archive needs them looked up again by subject.)
+The 12 benchmark queries (English and Dutch, each describing a known email without using its words: invoices, a refund, an order confirmation, a conference registration, a procedure email) refer to real mail, so they are kept outside the repo in `~/Library/Application Support/new-outlook-mcp/benchmark-queries.md` (mode 600).
 
 ---
 
@@ -135,6 +128,6 @@ Candidates, roughly by value: Outlook caches (exists), HEY `.eml` + backfill (ex
 
 - Short repeated footers dominate vector search; drop repeated lines before embedding.
 - Small multilingual embedders compress scores; a reranker is the cheap fix, recall is the hard part.
-- Write test queries from what the document *says*, not from what you know about it (the "physiotherapist" invoice never says physiotherapy).
+- Write test queries from what the document *says*, not from what you know about it (one test email was assumed to be about physiotherapy; its text never says so).
 - Version the schema and the chunking rules separately; status should tell the user when a rebuild is worth it.
 - Read-only opens must fail with a clear "run X to upgrade" message, not a SQL error.

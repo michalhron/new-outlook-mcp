@@ -1,5 +1,7 @@
 # Search by meaning
 
+<p align="center"><img src="assets/semantic.svg" alt="Three steps: the question lands near passages with the same meaning, meaning and keywords rank messages separately, and the two rankings fuse into one list." width="100%"></p>
+
 Keyword search finds mail that contains the words you type. Search by meaning finds mail that is about what you describe, even when it uses other words or another language. Ask for "reviewer comments about construct validity" and it can find a message that says "the second referee doubts that your scale measures what it claims to".
 
 It is optional. It runs entirely on your Mac: the model, the index and the queries never leave it. The only network request is the one-time model download, and it happens only when you run `new-outlook embed --download`.

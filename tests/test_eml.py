@@ -106,6 +106,22 @@ def test_attachment_text_survives_a_deleted_file(archive, hey_folder, tmp_path):
     assert "Deposit" in tools.get_attachment(archive, att.id)["text"]
 
 
+def test_box_subfolders_become_folders(archive, hey_folder, tmp_path):
+    write_eml(hey_folder / "imbox", "301.eml", subject="From the dean", body="Committee on Monday.",
+              mid="dean-1@hey.example")
+    write_eml(hey_folder / "feed", "302.eml", subject="Weekly digest", body="Ten links.", mid="news-1@hey.example")
+    (hey_folder / "feed" / ".303.eml.1.tmp").write_bytes(b"partial")
+    res = _import(archive, tmp_path)
+    assert res.inserted == 4
+    folders = {r[0]: r[1] for r in archive.conn.execute(
+        "SELECT m.subject, f.name FROM messages m JOIN folders f ON f.id = m.folder_id")}
+    assert folders["From the dean"] == "hey/imbox" and folders["Weekly digest"] == "hey/feed"
+    assert folders["Dinner"] == "hey"  # files at the top level keep the folder name
+    keys = {r[0] for r in archive.conn.execute("SELECT source_key FROM message_sources WHERE source = 'eml'")}
+    assert "hey/imbox/301.eml" in keys
+    assert [r["subject"] for r in tools.search_emails(archive, None, folder="hey/feed")["results"]] == ["Weekly digest"]
+
+
 def test_incremental_and_new_files(archive, hey_folder, tmp_path):
     _import(archive, tmp_path)
     assert _import(archive, tmp_path).inserted == 0

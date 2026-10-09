@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import shutil
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import paths
@@ -30,6 +30,7 @@ class SyncResult:
     events_inserted: int = 0
     events_removed: int = 0
     instances: int = 0
+    details: dict = field(default_factory=dict)
     message: str = ""
     snapshot_dir: str | None = None
 
@@ -96,6 +97,7 @@ def run_import(
                 res.instances = rebuild_instances(archive)
 
         res.errors += importer.stats.errors
+        res.details = dict(importer.details)
         notes = importer.stats.notes()
         if importer.expect_records and res.seen == 0:
             res.status = "warning"
@@ -117,6 +119,7 @@ def run_import(
             run_id, status=res.status, seen=res.seen, inserted=res.inserted, merged=res.merged,
             skipped=res.skipped, errors=res.errors, message=res.message,
             events_seen=res.events_seen, events_inserted=res.events_inserted,
+            details=res.details or dict(importer.details),
         )
         if not keep_snapshot:
             shutil.rmtree(snap_dir, ignore_errors=True)

@@ -56,8 +56,68 @@ def test_layout_change_is_reported_as_drift(archive, tmp_path):
     objs.append(ObjSpec(hxformat.C_MESSAGE, 0x5999, fs=0x620, strings={0x598: "x"}))
     write_store(p / "HxStore.hxd", objs)
     res = run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
-    assert res.status == "warning"
-    assert "unknown layout" in res.message and "zero records" in res.message
+    # Fail loudly, import nothing: offsets are only known for verified sizes.
+    assert res.status == "error" and res.needs_attention
+    assert "layout changed" in res.message and "0xc9" in res.message and "0x620" in res.message
+    assert archive.counts()["messages"] == 0 and archive.counts()["events"] == 0
+
+
+def test_sync_reports_block_and_object_stats(archive, profile, tmp_path):
+    (profile / "hxcore.hfl").write_bytes(b"\x08\x00\x00\x00\x00\x00\x01\x00" + b"\x00" * 64)
+    res = _sync(archive, profile, tmp_path)
+    d = res.details
+    assert d["blocks_crc_failed"] == 1 and d["blocks_ok"] == d["blocks_found"] - 1
+    assert d["copy_attempts"] == 1 and d["hxcore_hfl_copied"] is True and d["store_version"] == "i"
+    assert d["objects"]["messages"] == 3 and d["objects"]["events"] == 4
+    run = archive.last_runs()[0]
+    assert '"blocks_ok"' in run["details_json"]
+
+
+def test_torn_copy_is_retried_once(archive, profile, tmp_path, monkeypatch):
+    import shutil
+
+    from new_outlook_mcp.importers import hxstore as hxmod
+
+    real_copy = shutil.copy2
+    calls = []
+
+    def flaky_copy(src, dst, *a, **kw):
+        real_copy(src, dst, *a, **kw)
+        calls.append(dst)
+        if str(dst).endswith("HxStore.hxd") and len([c for c in calls if str(c).endswith(".hxd")]) == 1:
+            # First copy catches Outlook mid-write: flip a byte in every block payload.
+            data = bytearray(open(dst, "rb").read())
+            for i in range(0x1000 + 0x30, len(data), 512):
+                data[i] ^= 0xFF
+            open(dst, "wb").write(bytes(data))
+
+    monkeypatch.setattr(hxmod.shutil, "copy2", flaky_copy)
+    monkeypatch.setattr(hxmod, "RETRY_DELAY", 0)
+    res = _sync(archive, profile, tmp_path)
+    assert res.status == "ok" and res.details["copy_attempts"] == 2
+    assert res.inserted == 3
+
+
+def test_persistently_torn_copy_warns(archive, profile, tmp_path, monkeypatch):
+    import shutil
+
+    from new_outlook_mcp.importers import hxstore as hxmod
+
+    real_copy = shutil.copy2
+
+    def always_torn(src, dst, *a, **kw):
+        real_copy(src, dst, *a, **kw)
+        if str(dst).endswith(".hxd"):
+            data = bytearray(open(dst, "rb").read())
+            for i in range(0x1000 + 0x30, len(data), 512):
+                data[i] ^= 0xFF
+            open(dst, "wb").write(bytes(data))
+
+    monkeypatch.setattr(hxmod.shutil, "copy2", always_torn)
+    monkeypatch.setattr(hxmod, "RETRY_DELAY", 0)
+    res = _sync(archive, profile, tmp_path)
+    assert res.details["copy_attempts"] == 2
+    assert "even after a second copy" in res.message
 
 
 def test_messages_imported(archive, profile, tmp_path):
@@ -153,3 +213,17 @@ def test_dedup_with_legacy_by_message_id(loaded, tmp_path):
     assert res.merged == 1 and loaded.counts()["messages"] == before + 2
     e = tools.get_email(loaded, "alpha-1@example.org")
     assert e["sources"] == ["hxstore", "legacy"]
+
+
+def test_snapshot_command_writes_files_listing(profile, tmp_path, capsys):
+    from new_outlook_mcp import cli
+
+    assert cli.main(["snapshot", "--source", "hxstore", "--hxstore", str(profile / "HxStore.hxd"),
+                     "--dest", str(tmp_path / "snaps")]) == 0
+    out = capsys.readouterr().out
+    assert "blocks ok=" in out and "Files/ listing: 2 files" in out
+    snap = next((tmp_path / "snaps").iterdir())
+    listing = (snap / "files-listing.tsv").read_text().splitlines()
+    assert listing[0] == "path\tsize\tmtime_utc"
+    assert any(line.startswith("S0/3/Attachments/0/agenda[1].pdf\t19\t") for line in listing)
+    assert (snap / "attempt1" / "HxStore.hxd").exists()

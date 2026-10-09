@@ -44,11 +44,16 @@ def _source_paths(args) -> dict[str, Path]:
     return out
 
 
+def _source_options(args) -> dict[str, dict]:
+    return {"hxstore": {"index_orphans": not getattr(args, "no_orphan_files", False),
+                        "include_small_images": getattr(args, "include_small_images", False)}}
+
+
 def cmd_sync(args) -> int:
     names = _source_list(args.source)
     with Archive(args.db) as archive:
         results = sync(archive, names, source_paths=_source_paths(args), keep_snapshot=args.keep_snapshot,
-                       full=args.full)
+                       full=args.full, source_options=_source_options(args))
     stamp = datetime.now().isoformat(timespec="seconds")
     rc = 0
     for r in results:
@@ -61,6 +66,13 @@ def cmd_sync(args) -> int:
                 print(f"  blocks ok={d['blocks_ok']} crc_failed={d['blocks_crc_failed']} "
                       f"decode_failed={d['blocks_decode_failed']} of {d['blocks_found']} "
                       f"(copies taken: {d.get('copy_attempts', 1)}, hxcore.hfl copied: {d.get('hxcore_hfl_copied')})")
+            if "files" in d:
+                f = d["files"]
+                print(f"  Files/ cache: attachments {f.get('attachment_files', 0)} "
+                      f"(linked {f.get('attachment_linked', 0)}, orphan {f.get('attachment_orphans', 0)}, "
+                      f"small images skipped {f.get('small_images_skipped', 0)}), "
+                      f"bodies {f.get('body_files', 0)} (linked {f.get('body_linked', 0)}, "
+                      f"orphan {f.get('body_orphans', 0)}, matched to messages {f.get('body_linked_back', 0)})")
             if "objects" in d:
                 print("  objects " + " ".join(f"{k}={v}" for k, v in d["objects"].items()))
         if r.snapshot_dir:
@@ -277,6 +289,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--keep-snapshot", action="store_true", help="keep the copied source files")
     s.add_argument("--full", action="store_true", help="re-read records that were imported before")
     s.add_argument("--notify", action="store_true", help="macOS notification on failure or suspicious results")
+    s.add_argument("--no-orphan-files", action="store_true",
+                   help="do not index files in Outlook's Files/ folder that no record references")
+    s.add_argument("--include-small-images", action="store_true",
+                   help="also index small orphan png/gif images (under 10 KB, usually signature logos)")
     src_opts(s)
     s.set_defaults(func=cmd_sync)
 

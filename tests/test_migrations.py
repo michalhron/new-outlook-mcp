@@ -5,7 +5,12 @@ import sqlite3
 import pytest
 
 from new_outlook_mcp import db
-from new_outlook_mcp.db import SCHEMA_VERSION, Archive, SchemaOutdatedError, schema_version
+from new_outlook_mcp.db import (
+    SCHEMA_VERSION,
+    Archive,
+    SchemaOutdatedError,
+    schema_version,
+)
 
 
 def _old_archive(path):

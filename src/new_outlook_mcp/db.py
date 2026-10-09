@@ -97,6 +97,35 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_att_name ON attachments(filename);
 CREATE INDEX IF NOT EXISTS idx_att_pk ON attachments(message_pk);
 
+-- Files in Outlook's Files/ cache that no HxStore record points to (attachment files and
+-- EFMData bodies of messages that left the cache). Not tied to a message, so kept apart from
+-- `attachments`. Text is copied here because Outlook may delete the file later. `rel_path` is
+-- relative to the profile folder. `message_pk` is set when a body was matched back to a message.
+CREATE TABLE IF NOT EXISTS orphan_files (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    rel_path TEXT NOT NULL UNIQUE,
+    local_path TEXT,
+    filename TEXT,
+    content_type TEXT,
+    size INTEGER,
+    mtime INTEGER,
+    sha256 TEXT,
+    text TEXT,
+    text_kind TEXT,
+    message_pk INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    link_method TEXT,
+    exists_now INTEGER NOT NULL DEFAULT 1,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orphan_mtime ON orphan_files(mtime);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS orphan_fts USING fts5(
+    filename, body,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+
 CREATE TABLE IF NOT EXISTS sync_runs (
     id INTEGER PRIMARY KEY,
     source TEXT NOT NULL,
@@ -422,6 +451,16 @@ class Archive:
             (pk, row["subject"] or "", sender, recipients, row["body_text"] or ""),
         )
 
+    def upgrade_body(self, pk: int, html: str, text: str) -> bool:
+        """Replace a preview-only body with a full one. Messages that already have an HTML body are left alone."""
+        row = self.conn.execute("SELECT body_html FROM messages WHERE id = ?", (pk,)).fetchone()
+        if row is None or row["body_html"]:
+            return False
+        self.conn.execute("UPDATE messages SET body_html = ?, body_text = ?, updated_at = ? WHERE id = ?",
+                          (html, text, _now(), pk))
+        self._reindex(pk)
+        return True
+
     # ------------------------------------------------------------- sync runs
 
     def start_run(self, source: str, snapshot_dir: str | None = None) -> int:
@@ -452,6 +491,11 @@ class Archive:
             return None
         return zlib.decompress(row[0])
 
+    def has_orphan_table(self) -> bool:
+        """False for an archive written before orphan files existed and opened read-only."""
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orphan_files'").fetchone() is not None
+
     def counts(self, *, message_filter: tuple[str, list] | None = None,
                event_filter: tuple[str, list] | None = None) -> dict[str, int]:
         """Row counts. The filters are SQL predicates on `m` (messages) and `e` (events), see privacy.py."""
@@ -467,6 +511,8 @@ class Archive:
             "events": q(f"SELECT COUNT(*) FROM events e WHERE {ef}", ep),
             "event_instances": q("SELECT COUNT(*) FROM event_instances i JOIN events e ON e.id = i.event_pk"
                                  f" WHERE {ef}", ep),
+            "orphan_files": q("SELECT COUNT(*) FROM orphan_files o LEFT JOIN messages m ON m.id = o.message_pk"
+                              f" WHERE o.message_pk IS NULL OR ({mf})", mp) if self.has_orphan_table() else 0,
         }
         return out
 

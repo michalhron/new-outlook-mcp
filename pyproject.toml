@@ -22,7 +22,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6"]
+watch = ["watchdog>=4"]
+dev = ["pytest>=8", "ruff>=0.6", "watchdog>=4"]
 
 [project.scripts]
 new-outlook = "new_outlook_mcp.cli:main"

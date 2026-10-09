@@ -192,6 +192,41 @@ def excludes_event(rec, rules: Rules) -> bool:
             or _subject_matches(rec.subject, rules))
 
 
+_ADDR = re.compile(r"[\w.+-]+@[\w.-]+\.[a-z]{2,}", re.IGNORECASE)
+
+
+def excludes_orphan(filename: str | None, text: str | None, rules: Rules) -> bool:
+    """True if an unlinked file from Outlook's Files/ cache may belong to excluded mail.
+
+    Such files have no sender, account or folder, so this errs on the side of hiding:
+    the file name is checked against attachment-name and subject-keyword rules, and the
+    text against subject keywords, excluded senders and excluded domains.
+    Account, folder and recipient rules cannot be checked for unlinked files.
+    """
+    if not rules.active:
+        return False
+    if _filename_matches(filename, rules) or _subject_matches(filename, rules):
+        return True
+    t = _fold((text or "")[:500_000])
+    if not t:
+        return False
+    if any(k in t for k in rules.subject_keywords) or any(s in t for s in rules.senders):
+        return True
+    return bool(rules.domains) and any(_domain_matches(a, rules) for a in _ADDR.findall(t))
+
+
+def orphan_hidden(conn: sqlite3.Connection, row, rules: Rules | None = None) -> bool:
+    """Visibility of an orphan_files row: linked files follow their message."""
+    rules = load_rules() if rules is None else rules
+    if not rules.active:
+        return False
+    if row["message_pk"] is not None:
+        sql, params = _hidden_message_sql(conn, rules, "m")
+        return sql != "0" and conn.execute(
+            f"SELECT 1 FROM messages m WHERE m.id = ? AND ({sql})", [row["message_pk"], *params]).fetchone() is not None
+    return excludes_orphan(row["filename"], row["text"], rules)
+
+
 # ------------------------------------------------------------------ SQL predicates
 
 def _marks(n: int) -> str:
@@ -349,7 +384,7 @@ def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict
     """Delete archived messages and events that match the rules. Returns counts only."""
     rules = load_rules() if rules is None else rules
     conn = archive.conn
-    out = dict.fromkeys(("messages", "attachments", "cached_files", "events", "folders", "accounts"), 0)
+    out = dict.fromkeys(("messages", "attachments", "cached_files", "orphan_files", "events", "folders", "accounts"), 0)
     if not rules.active:
         return out
     msql, mparams = _hidden_message_sql(conn, rules, "m")
@@ -364,12 +399,20 @@ def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict
     out["attachments"] = len(att_ids)
     cache = paths.app_dir() / "attachments"
     out["cached_files"] = sum(1 for i in att_ids if (cache / str(i)).exists())
+    has_orphans = archive.has_orphan_table()
+    orphan_ids = [r["id"] for r in conn.execute("SELECT * FROM orphan_files")
+                  if orphan_hidden(conn, r, rules)] if has_orphans else []
+    out["orphan_files"] = len(orphan_ids)
     folder_ids = hidden_folder_ids(conn, rules)
     if dry_run:
         out["folders"] = sum(1 for f in folder_ids if _folder_unused(conn, f, set(mids)))
         return out
     conn.execute("PRAGMA secure_delete = ON")
     with archive.transaction():
+        for chunk in _chunks(orphan_ids):
+            marks = _marks(len(chunk))
+            conn.execute(f"DELETE FROM orphan_fts WHERE rowid IN ({marks})", chunk)
+            conn.execute(f"DELETE FROM orphan_files WHERE id IN ({marks})", chunk)
         for chunk in _chunks(mids):
             marks = _marks(len(chunk))
             conn.execute(f"DELETE FROM messages_fts WHERE rowid IN ({marks})", chunk)

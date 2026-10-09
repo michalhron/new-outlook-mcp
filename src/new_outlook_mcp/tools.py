@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 import subprocess
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
@@ -360,6 +361,41 @@ def archive_status(archive: Archive) -> dict:
         "coverage_by_source": archive.coverage(),
         "calendar_coverage_by_source": archive.calendar_coverage(),
         "last_sync_by_source": archive.last_runs(),
+        "sync_health": sync_health(archive),
+    }
+
+
+def _parse_ts(value: str | None) -> float | None:
+    try:
+        dt = datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+    if dt is None:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def sync_health(archive: Archive, *, now: float | None = None, state_path=None) -> dict:
+    """Freshness of the archive: last sync, lag behind Outlook, watcher state, last drift warning."""
+    from . import watch
+
+    now = time.time() if now is None else now
+    conn = archive.conn
+    last = conn.execute(
+        "SELECT MAX(COALESCE(finished_at, started_at)) FROM sync_runs WHERE status != 'running'").fetchone()[0]
+    newest = next((c["last"] for c in archive.coverage() if c["source"] == "hxstore"), None)
+    new_ts, last_ts = _parse_ts(newest), _parse_ts(last)
+    drift = conn.execute(
+        """SELECT source, status, COALESCE(finished_at, started_at) AS at, message FROM sync_runs
+           WHERE status = 'error' OR message LIKE '%layout changed%' OR message LIKE '%format drift%'
+           ORDER BY id DESC LIMIT 1""").fetchone()
+    return {
+        "last_sync_at": last,
+        "newest_hxstore_message": newest,
+        "lag_vs_now_s": round(now - new_ts) if new_ts is not None else None,
+        "lag_vs_last_sync_s": round(last_ts - new_ts) if new_ts is not None and last_ts is not None else None,
+        "watcher": watch.watcher_status(state_path, now=now),
+        "last_drift_warning": dict(drift) if drift else None,
     }
 
 

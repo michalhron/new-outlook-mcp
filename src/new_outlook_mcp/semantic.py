@@ -28,6 +28,7 @@ from .db import Archive, _now
 from .embedder import (MISSING_EXTRA, NOT_EMBEDDED, Embedder, SemanticUnavailable, get_embedder,
                        semantic_installed)
 from .privacy import filter_allowed_message_ids
+from .reranker import RERANK_POOL, get_reranker
 from .tools import ToolInputError
 from .vectors import VEC_MAX_K, VectorStore, pick_backend
 
@@ -456,6 +457,33 @@ def _result(row: sqlite3.Row, *, score: float, vec: dict | None, kw: dict | None
     return out
 
 
+def _rerank_text(row: sqlite3.Row, vec: dict | None, kw: dict | None) -> str:
+    """What the reranker reads for one candidate: subject plus the passage that matched (or the body start)."""
+    if vec:
+        passage = vec["text"]
+    elif kw and kw.get("snippet"):
+        passage = re.sub(r"[\[\]]", "", kw["snippet"])
+    else:
+        passage = (row["body_text"] or "")[:600]
+    return f"{row['subject'] or ''}\n{passage}"
+
+
+def _rerank(query: str, fused: list[tuple[int, float]], rows: dict, by_vec: dict, by_kw: dict
+            ) -> tuple[list[tuple[int, float]], bool]:
+    """Reorder the best RERANK_POOL results with the cross-encoder. Unchanged when it is unavailable."""
+    reranker = get_reranker()
+    if reranker is None or len(fused) < 2:
+        return fused, False
+    head, tail = fused[:RERANK_POOL], fused[RERANK_POOL:]
+    try:
+        scores = reranker.score(query, [_rerank_text(rows[pk], by_vec.get(pk), by_kw.get(pk)) for pk, _ in head])
+    except Exception as exc:  # a reranker failure must not fail the search
+        log.warning("reranking skipped: %s", exc)
+        return fused, False
+    order = sorted(range(len(head)), key=lambda i: -scores[i])
+    return [(head[i][0], scores[i]) for i in order] + tail, True
+
+
 def search_by_mode(archive: Archive, query: str | None, mode: str, where: list[str], params: list, *,
                    sort: str = "relevance", limit: int = 20, offset: int = 0) -> dict:
     """Semantic or hybrid search with pre-built filter clauses (see tools._filter_clauses)."""
@@ -476,11 +504,15 @@ def search_by_mode(archive: Archive, query: str | None, mode: str, where: list[s
         else [(h["pk"], h["score"]) for h in vec_hits]
     rows = _fetch_rows(archive, [pk for pk, _ in fused])
     fused = [(pk, s) for pk, s in fused if pk in rows]
+    reranked = False
+    if sort == "relevance" and offset < RERANK_POOL:
+        fused, reranked = _rerank(query, fused, rows, by_vec, by_kw)
     if sort != "relevance":
         fused.sort(key=lambda x: rows[x[0]]["date_ts"] or 0, reverse=(sort == "date_desc"))
     page = fused[offset:offset + limit]
     results = [_result(rows[pk], score=s, vec=by_vec.get(pk), kw=by_kw.get(pk), archive=archive) for pk, s in page]
-    out = {"mode": mode, "total": len(fused), "offset": offset, "count": len(results), "results": results}
+    out = {"mode": mode, "total": len(fused), "offset": offset, "count": len(results), "results": results,
+           "reranked": reranked}
     if offset + len(results) < len(fused):
         out["next_offset"] = offset + len(results)
     return out

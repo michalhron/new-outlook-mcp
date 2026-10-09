@@ -29,11 +29,18 @@ Contents:
    "hey": {
      "command": "bun",
      "args": ["run", "/absolute/path/to/mcp-hey/src/index.ts"],
-     "env": { "HEY_ARCHIVE_DIR": "~/Mail/hey-archive" }
+     "env": {
+       "HEY_ARCHIVE_DIR": "~/Mail/hey-archive",
+       "HEY_ARCHIVE_BOXES": "imbox,set_aside,reply_later"
+     }
    }
    ```
 
    Keep the folder out of iCloud Drive, Dropbox and other synced folders. It holds the full text of your mail.
+
+   mcp-hey files each message under its Hey box: `imbox/`, `feed/`, `paper_trail/`, `set_aside/`, `reply_later/` or `unknown/`. `HEY_ARCHIVE_BOXES` keeps only the boxes you list. The example leaves out newsletters (The Feed) and receipts (Paper Trail).
+
+   The box comes from what mcp-hey has seen, with no extra requests to Hey. First comes the box the message was listed in. Then comes the box where the same sender's mail was listed, because Hey routes mail by sender. A message you open from a search, from a sender mcp-hey has not seen in a listing yet, is `unknown`. Add `unknown` to the list to keep such messages, or leave it out to skip them. Listing your Feed and Paper Trail once (ask Claude to list them through mcp-hey) teaches it those senders.
 
 2. Tell new-outlook-mcp about the folder and which account its mail belongs to:
 
@@ -50,7 +57,7 @@ Contents:
 
    After that, the watcher imports new files within about a minute, and the 36-hour job covers the rest. Install or reinstall the watcher (`new-outlook launchd install --watch`) after adding the folder so it watches it too.
 
-Any folder of `.eml` files works the same way. Each folder gets its own name, which becomes the folder shown in the archive.
+Any folder of `.eml` files works the same way. Each folder gets its own name, which becomes the folder shown in the archive. Files in subfolders get the subfolder too, so HEY mail shows as `hey/imbox`, `hey/feed` and so on, and `folder` filters and privacy rules work on it.
 
 ## Assign realms
 

@@ -7,10 +7,12 @@ Each folder is listed in the `[eml_folders]` table of the private config file:
     account = "you@hey.com"
 
 mcp-hey writes such a folder when HEY_ARCHIVE_DIR is set: one file per HEY
-message you read, written once and never changed. Files are read in place,
-read-only, like Outlook's write-once cached attachments. A file is imported
-once, keyed by folder name and file name. Messages carry the configured
-account, and the folder name becomes the archive folder.
+message you read, written once and never changed, in a subfolder per Hey box
+(`imbox/`, `feed/`, `paper_trail/`, ...). Files are read in place, read-only,
+like Outlook's write-once cached attachments. A file is imported once, keyed
+by its path inside the folder. Messages carry the configured account. The
+archive folder is the folder name, plus the subfolder when there is one
+(`hey/imbox`).
 """
 
 from __future__ import annotations
@@ -90,13 +92,27 @@ def remove_folder(name: str) -> bool:
     return True
 
 
+def _is_eml(p: Path) -> bool:
+    return p.suffix.lower() == ".eml" and not p.name.startswith(".") and p.is_file()
+
+
 def eml_files(folder: Path) -> list[Path]:
-    """The .eml files of a folder, oldest first. Hidden and temporary files are skipped."""
+    """The .eml files of a folder and of its direct subfolders, oldest first. Hidden and temporary files are skipped."""
+    found: list[Path] = []
     try:
-        entries = [p for p in folder.iterdir() if p.suffix.lower() == ".eml" and not p.name.startswith(".")]
+        for p in folder.iterdir():
+            if p.name.startswith("."):
+                continue
+            if p.is_dir():
+                try:
+                    found += [q for q in p.iterdir() if _is_eml(q)]
+                except OSError:
+                    continue
+            elif _is_eml(p):
+                found.append(p)
     except OSError:
         return []
-    return sorted((p for p in entries if p.is_file()), key=lambda p: (p.stat().st_mtime_ns, p.name))
+    return sorted(found, key=lambda p: (p.stat().st_mtime_ns, str(p)))
 
 
 class EmlImporter(Importer):
@@ -130,7 +146,8 @@ class EmlImporter(Importer):
                 self.stats.warnings.append(f"folder {folder.name} not found")
                 continue
             for path in eml_files(folder.path):
-                key = f"{folder.name}/{path.name}"
+                rel = path.relative_to(folder.path)
+                key = f"{folder.name}/{rel.as_posix()}"
                 self.stats.seen += 1
                 if key in skip_keys:
                     self.stats.skipped += 1
@@ -143,12 +160,13 @@ class EmlImporter(Importer):
                     self.stats.errors += 1
                     continue
                 try:
-                    yield self._record(folder, key, path, data)
+                    sub = rel.parent.as_posix()
+                    yield self._record(folder, key, path, data, folder.name if sub == "." else f"{folder.name}/{sub}")
                 except Exception:
                     self.stats.errors += 1
                     self.stats.count("unparsable files")
 
-    def _record(self, folder: EmlFolder, key: str, path: Path, data: bytes) -> MessageRecord:
+    def _record(self, folder: EmlFolder, key: str, path: Path, data: bytes, folder_label: str) -> MessageRecord:
         parsed = mime.parse_rfc822(data)
         for a in parsed.attachments:
             a.local_path, a.storage = str(path), "mime_file"
@@ -156,7 +174,7 @@ class EmlImporter(Importer):
         return MessageRecord(
             source=self.name, source_key=key, message_id=parsed.message_id, subject=parsed.subject,
             from_name=parsed.from_name, from_addr=parsed.from_addr, to=parsed.to, cc=parsed.cc, bcc=parsed.bcc,
-            date=parsed.date, folder=folder.name, account=folder.account, in_reply_to=parsed.in_reply_to,
+            date=parsed.date, folder=folder_label, account=folder.account, in_reply_to=parsed.in_reply_to,
             references=parsed.references, headers=parsed.headers, body_text=parsed.body_text,
             body_html=parsed.body_html, attachments=parsed.attachments, raw_source_path=str(path),
             raw_source=mime.normalize_line_endings(data), size=len(data),

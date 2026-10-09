@@ -104,6 +104,9 @@ ATTACHMENT_PART = (
 )
 
 
+ACCOUNT_UID = 60129542146
+
+
 def build_legacy_data(root: Path) -> Path:
     """Create root/Data with 5 messages. Returns the Data path."""
     data = root / "Data"
@@ -125,18 +128,22 @@ def build_legacy_data(root: Path) -> Path:
             Record_RecordID INTEGER PRIMARY KEY, Folder_Name TEXT, Folder_ParentID INTEGER,
             Record_AccountUID INTEGER, Folder_SpecialFolderType INTEGER);
         CREATE TABLE AccountsExchange (
-            Record_RecordID INTEGER PRIMARY KEY, Account_Name TEXT, Account_EmailAddress TEXT);
+            Record_RecordID INTEGER PRIMARY KEY, Account_Name TEXT, Account_EmailAddress TEXT,
+            Account_MailAccountUID INTEGER);
         CREATE TABLE Blocks (BlockID BLOB, BlockTag INTEGER, PathToDataFile TEXT);
         CREATE TABLE Mail_OwnedBlocks (Record_RecordID INTEGER, BlockID BLOB, BlockTag INTEGER);
         CREATE TABLE Main (Record_RecordID INTEGER PRIMARY KEY);
         """
     )
+    # Like real profiles: the mailbox root folder has no name, and Mail.Record_AccountUID
+    # holds AccountsExchange.Account_MailAccountUID (a large number), not its RecordID.
     conn.executemany("INSERT INTO Folders VALUES (?, ?, ?, ?, ?)", [
-        (1, "Inbox", 999, 1, 1),
-        (2, "Projects", 1, 1, 0),
-        (3, "Sent Items", 999, 1, 2),
+        (122, None, 0, ACCOUNT_UID, 0),
+        (1, "Inbox", 122, ACCOUNT_UID, 1),
+        (2, "Projects", 1, ACCOUNT_UID, 0),
+        (3, "Sent Items", 122, ACCOUNT_UID, 2),
     ])
-    conn.execute("INSERT INTO AccountsExchange VALUES (1, 'University', 'me@uni.example.edu')")
+    conn.execute("INSERT INTO AccountsExchange VALUES (1, 'University', 'me@uni.example.edu', ?)", (ACCOUNT_UID,))
 
     def add_block(rid: int, tag: str, rel: str, content: bytes) -> None:
         (data / rel).write_bytes(content)
@@ -154,13 +161,13 @@ def build_legacy_data(root: Path) -> Path:
     # 101: full source available (MSrc) with a MIME attachment.
     rel = add_entity(101, {olk15.PROP_SUBJECT: utf16z("Quarterly budget review")})
     add_block(101, "MSrc", "Message Sources/S0/src-101.olk15MsgSource", block_file("MSrc", MIME_PLAIN.encode()))
-    mail.append((101, rel, 2, 1, "Quarterly budget review", "Ada Example", "ada@example.org", "Bob Sample",
+    mail.append((101, rel, 2, ACCOUNT_UID, "Quarterly budget review", "Ada Example", "ada@example.org", "Bob Sample",
                  "bob@example.net", "dan@example.org", unix(2024, 3, 5, 8, 15), None, "<alpha-1@example.org>",
                  1, 1, "Hi Bob, please find", 2048, 7001))
     # 102: reply, source with CR line endings.
     rel = add_entity(102, {})
     add_block(102, "MSrc", "Message Sources/S0/src-102.olk15MsgSource", block_file("MSrc", MIME_REPLY.encode()))
-    mail.append((102, rel, 1, 1, "Quarterly budget review", "bob@example.net", None, "Ada Example", None, None,
+    mail.append((102, rel, 1, ACCOUNT_UID, "Quarterly budget review", "bob@example.net", None, "Ada Example", None, None,
                  unix(2024, 3, 6, 10), None, "alpha-2@example.net", 0, 0, "Thanks Ada", 900, 7001))
     # 103: no source; .olk15Message holds subject, HTML body and headers; plus an Attc block.
     headers = (
@@ -174,15 +181,15 @@ def build_legacy_data(root: Path) -> Path:
     })
     add_block(103, "Attc", "Message Attachments/S0/att-103.olk15MsgAttachment",
               block_file("Attc", ATTACHMENT_PART.encode()))
-    mail.append((103, rel, 1, 1, "Field trip logistics", "Erin Demo", None, "me@uni.example.edu", None, None,
+    mail.append((103, rel, 1, ACCOUNT_UID, "Field trip logistics", "Erin Demo", None, "me@uni.example.edu", None, None,
                  unix(2024, 5, 10, 16, 30), None, None, 1, 1, "The bus leaves", 5000, None))
     # 104: nothing but database columns (data file missing). Times in Cocoa seconds.
-    mail.append((104, "Messages/S0/missing.olk15Message", 3, 1, "Lunch?", "Me", "me@uni.example.edu",
+    mail.append((104, "Messages/S0/missing.olk15Message", 3, ACCOUNT_UID, "Lunch?", "Me", "me@uni.example.edu",
                  "frank@example.org", "frank@example.org", None, unix(2025, 1, 2) - 978307200, None, None,
                  1, 0, "Lunch on Thursday at the canteen?", 300, None))
     # 105: duplicate of 101 (same Message-ID) in another folder: must be deduplicated.
     rel = add_entity(105, {olk15.PROP_SUBJECT: utf16z("Quarterly budget review")})
-    mail.append((105, rel, 1, 1, "Quarterly budget review", "Ada Example", "ada@example.org", None, None, None,
+    mail.append((105, rel, 1, ACCOUNT_UID, "Quarterly budget review", "Ada Example", "ada@example.org", None, None, None,
                  unix(2024, 3, 5, 8, 15), None, "alpha-1@example.org", 1, 0, "Hi Bob", 2048, 7001))
 
     _add_legacy_calendar(conn, data)
@@ -230,7 +237,7 @@ def _add_legacy_calendar(conn: sqlite3.Connection, data: Path) -> None:
             Record_RecordID INTEGER PRIMARY KEY, PathToDataFile TEXT, Record_FolderID INTEGER,
             Record_AccountUID INTEGER, Calendar_StartDateUTC INTEGER, Calendar_EndDateUTC INTEGER,
             Calendar_IsRecurring INTEGER, Calendar_RecurrenceID INTEGER, Calendar_MasterRecordID INTEGER);
-        INSERT INTO Folders VALUES (4, 'Calendar', 999, 1, 0);
+        INSERT INTO Folders VALUES (4, 'Calendar', 122, 60129542146, 0);
         """
     )
 

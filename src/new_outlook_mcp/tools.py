@@ -414,11 +414,12 @@ def archive_status(archive: Archive) -> dict:
     mf, ef = privacy.message_visible(conn, "m", rules), privacy.event_visible(conn, "e", rules)
     counts = archive.counts(message_filter=mf, event_filter=ef)
     counts["folders"] -= len(privacy.hidden_folder_ids(conn, rules))
-    if rules.accounts:
-        counts["accounts"] -= len(privacy.hidden_account_ids(conn, rules))
+    # Accounts whose mail is all hidden are already left out; also drop excluded accounts without mail.
+    counts["accounts"] = sum(1 for n in archive.visible_accounts(mf) if privacy.account_visible(n, rules))
     return {
         "database": str(archive.path),
         "counts": counts,
+        "accounts": archive.account_overview(mf),
         "coverage_by_source": archive.coverage(mf),
         "calendar_coverage_by_source": archive.calendar_coverage(ef),
         "last_sync_by_source": archive.last_runs(),

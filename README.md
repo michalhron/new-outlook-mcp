@@ -177,6 +177,51 @@ The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS 
 
 The snapshot is deleted after a successful import. Keep it with `--keep-snapshot`, or take one by hand with `new-outlook snapshot`.
 
+## Privacy scopes
+
+Some mail must never be retrievable, such as grades, hiring and HR. Privacy scopes are exclusion rules in the private `config.toml` (mode 600). Excluded mail is never written to the archive and no tool ever returns it.
+
+```toml
+[exclude]
+accounts = ["me@other.example"]          # account address
+folders = ["Grades", "deleteditems"]     # folder name or path, case-insensitive
+senders = ["hr@corp.example"]            # exact sender address
+domains = ["hiring.example"]             # sender domain, subdomains match too
+subject_keywords = ["exam results"]      # case-insensitive substring of the subject
+attachment_names = ["*grades*.xlsx"]     # file name patterns, case-insensitive
+recipients = ["committee@uni.example"]   # address found in To, Cc or Bcc
+```
+
+Manage the rules with the CLI:
+
+```sh
+new-outlook privacy show                                  # prints your rules and how many archived items they hide
+new-outlook privacy add --folder Grades --domain hiring.example
+new-outlook privacy remove --folder Grades
+new-outlook purge-excluded --dry-run                      # counts only
+new-outlook purge-excluded                                # delete what was imported before the rule existed
+```
+
+Options for `add` and `remove`: `--account`, `--folder`, `--sender`, `--domain`, `--subject-keyword`, `--attachment-name`, `--recipient`. A typo in the `[exclude]` table is an error, so the sync and the tools stop instead of ignoring the rule.
+
+How the rules apply:
+
+- At import: A message that matches any rule is dropped before it is stored. Every importer goes through the same filter. `sync` reports only a count (`excluded=N`). It never logs what matched.
+- At query time: Rules can change after an import, so every read path filters again: `search_emails` (full-text and filters), `get_email` (an excluded message is "not found"), `get_thread`, `list_recent`, `list_folders` (excluded folders are hidden and counts leave out hidden mail), `list_attachments`, `get_attachment`, `meeting_prep`, the calendar tools and the counts in `archive_status`. Adding a rule takes effect on the next tool call without a restart.
+- Purge: `purge-excluded` deletes the matching messages, their attachment rows, search index rows, source records and decoded attachment files, plus matching events with their attendees and instances. It then compacts the database so deleted text does not stay in free pages. It prints counts only.
+- Status: `archive_status` reports `privacy: {active, rules, hidden_messages, hidden_events}`. These are counts only.
+
+Matching details:
+
+- Folder rules match a folder name or any part of its path, so `Grades` also hides `Inbox/Grades` and its subfolders. Names like `deleteditems`, `junk`, `sentitems`, `drafts` and `archive` match the well-known folders.
+- A rule on a folder or account hides the whole folder or account, including its entry in `list_folders`.
+- An `attachment_names` rule hides the whole message, not only the file.
+- Recipient rules match the address anywhere in the To, Cc and Bcc lists.
+- Calendar events follow the `accounts`, `senders` and `domains` rules (applied to the organizer) and `subject_keywords`. Folder, attachment and recipient rules do not apply to events. Free/busy and free-slot results also leave out hidden events, so a hidden meeting shows as free time.
+- If a rule hides the first event of a recurring series, its modified occurrences are hidden too.
+
+Limits: rules see only what the importers extract. A sender rule needs a sender address, and an attachment rule needs attachment details. A second copy of a message that lacks them is judged on its own. Messages the filter drops are not recorded, so the next sync reads them again and drops them again. Remove a rule and the next sync brings the mail back.
+
 ## Configuration
 
 | Variable | Default |

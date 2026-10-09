@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/assets/banner.svg" alt="new-outlook-mcp: Claude reads your Outlook mail and calendar from the files already on your Mac" width="100%"></p>
 
-A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API.
+A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API. Private mail you read through [mcp-hey](https://github.com/michalhron/mcp-hey) can join the same archive, kept apart as its own realm.
 
 ## Why it exists
 
@@ -75,6 +75,7 @@ Using it:
 - [Calendar](docs/calendar.md): sources, the published ICS feed, timezones, free time.
 - [Safety and privacy](docs/privacy.md): what the project does with your mail, privacy scopes, purging.
 - [Data sources](docs/data-sources.md): what each Outlook source holds, how they merge, orphan files, changing institutions.
+- [Work and private mail](docs/work-and-private.md): HEY mail you read through mcp-hey, realms, and the work-only default.
 - [Checking the import](docs/validation.md): validate, experiments, coverage, status.
 - [Limitations and maintenance](docs/maintenance.md): known gaps, and what to do when an Outlook update breaks the import.
 

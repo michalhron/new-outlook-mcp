@@ -13,11 +13,14 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pydantic import Field
 
-from . import __version__, caltools, paths, tools
+from . import __version__, caltools, paths, realms, tools
 from .db import Archive
 from .sync import sync
 
 TzParam = Annotated[str | None, Field(description="IANA timezone for input and output times (default: this Mac's zone)")]
+RealmParam = Annotated[Literal["work", "private", "all"] | None, Field(
+    description="Which mail to cover: work, private or all. Default: the user's default realm (work once "
+                "realms are set up). Use private or all only when the user asks about private mail")]
 
 READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
@@ -28,13 +31,19 @@ ICS feeds. Search with search_emails, then open a message with get_email (use
 its `id`). Bodies are plain text and may be truncated: pass `offset` =
 `next_offset` to continue. search_files finds attachment files and bodies in Outlook's
 cache that no archived message owns. Calendar tools work on the user's own calendar only.
+When the user has assigned accounts to realms, results carry a `realm` (work,
+private or unassigned) and searches cover work mail by default. Pass
+realm="private" or realm="all" only when the user asks about private mail.
 Nothing here can send mail, answer invitations, or change calendar events.
 create_draft and create_event_draft only open a draft that the user reviews
 and sends or saves themselves.
 """
 
 
-def build_server(db_path: Path | None = None) -> MCPServer:
+def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MCPServer:
+    """`realm` ("work", "private", "all") sets this process's realm fence. None leaves it as it is."""
+    if realm is not None:
+        realms.set_fence(realm)
     db_path = Path(db_path or paths.db_path())
     server = MCPServer("new-outlook", instructions=INSTRUCTIONS, version=__version__)
     state: dict[str, Archive] = {}
@@ -67,11 +76,13 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         mode: Annotated[Literal["keyword", "semantic", "hybrid"], Field(
             description="keyword: exact words (default). semantic: by meaning. hybrid: both, fused. "
                         "semantic and hybrid need `new-outlook embed` to have been run")] = "keyword",
+        realm: RealmParam = None,
     ) -> dict:
         """Search archived emails. Returns summaries with an `id` for get_email/get_thread."""
         return call(tools.search_emails, query, from_=sender, to=recipient, folder=folder, account=account,
                     date_from=date_from, date_to=date_to, has_attachment=has_attachment,
-                    attachment_name=attachment_name, sort=sort, limit=limit, offset=offset, mode=mode)
+                    attachment_name=attachment_name, sort=sort, limit=limit, offset=offset, mode=mode,
+                    realm=realm)
 
     @server.tool(annotations=READ_ONLY)
     def semantic_search(
@@ -86,22 +97,24 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         date_to: Annotated[str | None, Field(description="Latest date, inclusive, YYYY-MM-DD or ISO 8601 (UTC)")] = None,
         has_attachment: bool | None = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 10,
+        realm: RealmParam = None,
     ) -> dict:
         """Find emails and attachments by meaning. Each result is one email with the best matching passage as
         its `snippet`, `match` says whether that passage is the subject, the body or an attachment, and
         `matched` says whether meaning, keywords or both found it."""
         return call(tools.semantic_search, query, mode=mode, limit=limit, from_=sender, to=recipient,
                     folder=folder, account=account, date_from=date_from, date_to=date_to,
-                    has_attachment=has_attachment)
+                    has_attachment=has_attachment, realm=realm)
 
     @server.tool(annotations=READ_ONLY)
     def find_similar(
         email_id: Annotated[str | None, Field(description="Archive id or Message-ID of an email")] = None,
         attachment_id: Annotated[int | None, Field(description="attachment_id from list_attachments")] = None,
         limit: Annotated[int, Field(ge=1, le=100)] = 10,
+        realm: RealmParam = None,
     ) -> dict:
         """Find emails similar in content to an email or to one attachment. Give exactly one of the two ids."""
-        return call(tools.find_similar, email_id, attachment_id=attachment_id, limit=limit)
+        return call(tools.find_similar, email_id, attachment_id=attachment_id, limit=limit, realm=realm)
 
     @server.tool(annotations=READ_ONLY)
     def get_email(
@@ -131,9 +144,10 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         folder: str | None = None,
         account: str | None = None,
         days: Annotated[int | None, Field(ge=1, description="Only messages from the last N days")] = None,
+        realm: RealmParam = None,
     ) -> dict:
         """List the newest archived emails."""
-        return call(tools.list_recent, limit=limit, folder=folder, account=account, days=days)
+        return call(tools.list_recent, limit=limit, folder=folder, account=account, days=days, realm=realm)
 
     @server.tool(annotations=READ_ONLY)
     def list_attachments(
@@ -311,9 +325,16 @@ def build_server(db_path: Path | None = None) -> MCPServer:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="new-outlook-mcp", description="Run the MCP server on stdio.")
     parser.add_argument("--db", type=Path, help=f"archive database (default: {paths.db_path()})")
+    parser.add_argument("--realm", choices=realms.FENCES,
+                        help="hard limit: every tool returns only this realm, whatever a call asks for. "
+                             "Default: $NEW_OUTLOOK_REALM, else all (searches still default to work)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
-    build_server(args.db).run("stdio")
+    try:
+        fence = realms.default_fence(args.realm)
+    except realms.RealmConfigError as exc:
+        parser.error(str(exc))
+    build_server(args.db, realm=fence).run("stdio")
 
 
 if __name__ == "__main__":

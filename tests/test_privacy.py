@@ -508,7 +508,7 @@ def test_config_roundtrip_keeps_unknown_sections():
 def test_status_without_rules_reports_inactive(loaded):
     pv = tools.archive_status(loaded)["privacy"]
     assert pv == {"active": False, "rules": dict.fromkeys(privacy.RULE_TYPES, 0),
-                  "hidden_messages": 0, "hidden_events": 0}
+                  "hidden_messages": 0, "hidden_events": 0, "realm": "all"}
 
 
 def test_excluded_account_hidden_from_account_overview(loaded):

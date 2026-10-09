@@ -113,7 +113,7 @@ def write_store(path: Path, objects: list[ObjSpec], *, version: bytes = b"i", co
     struct.pack_into("<I", header, 0x50, 0xDEADBEEF)
     out = bytearray(header)
     trailer = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x01"
-    for i, ob in enumerate(objects):
+    for ob in objects:
         raw = ob.build()
         out += block(ob.oid, struct.pack("<I", len(raw)) + raw + trailer)
     if corrupt_one:

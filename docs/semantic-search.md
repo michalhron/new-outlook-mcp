@@ -80,18 +80,11 @@ If search by meaning is not set up, `search_emails` in `hybrid` mode falls back 
 
 Search by meaning has two halves. Indexing turns every message into vectors once. Querying turns your question into a vector and looks for the nearest ones.
 
-```
- indexing (embed, and after each sync)
- message ─► subject ─────────────────────────────────┐
-         ─► body ─► strip quotes and signature ─► chunks ─► model ("passage: ") ─► vectors ─► chunk_vec
-         ─► attachment text (local files) ─► chunks ─┘
-
- querying
- question ─► model ("query: ") ─► vector ─► nearest chunks ─► best chunk per message ─► filters + privacy ─┐
-          ─► keyword query (OR of words) ─► FTS5 bm25 ─► filters + privacy ─────────────────────────────────┴─► RRF ─► results
-```
+<p align="center"><img src="assets/semantic-pipeline.svg" alt="Indexing: message, parts, cleaning, chunks, model, vectors. Querying: the question goes through the model to nearest chunks and through a keyword query to bm25, both are filtered and fused with RRF." width="100%"></p>
 
 ### 1. Chunking
+
+<p align="center"><img src="assets/chunking.svg" alt="A mail body keeps the author's paragraphs and drops the quoted reply and the signature. The subject, body chunks with overlap, and attachment chunks with the file name are embedded." width="100%"></p>
 
 A whole message is too long and too mixed for one vector. Each message is split into chunks first (`chunking.py`, `semantic.build_chunks`):
 
@@ -134,6 +127,8 @@ For a question, the server:
 Both rankings are cut to a pool of at least 100 messages, or five times the page you asked for, whichever is larger.
 
 ### 5. Reciprocal Rank Fusion
+
+<p align="center"><img src="assets/rrf.svg" alt="Worked example: messages ranked by meaning A to E and by keywords C, F, A, G, B. Fused scores put A and C first, then B, which both rankings found." width="100%"></p>
 
 Cosine similarities and bm25 scores are on different scales, so they cannot be added. Reciprocal Rank Fusion uses only the ranks:
 

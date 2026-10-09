@@ -43,6 +43,8 @@ The importer reads messages, recipients, folders, accounts, attachments (metadat
 
 ### Blocks
 
+<p align="center"><img src="assets/hxstore-block.svg" alt="Block layout: two CRC-32 fields, the magic, key length, compressed and inflated length, codec, key, then the LZ4 payload. The first CRC covers bytes 0x04 to 0x20, the second covers the magic, the key and the payload." width="100%"></p>
+
 Blocks start on 512-byte boundaries. Find them by scanning for the 8-byte magic `05 6a 70 3b 64 45 02 5d` and stepping back 8 bytes.
 
 | Offset | Type | Field |

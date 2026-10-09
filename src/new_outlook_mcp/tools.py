@@ -73,7 +73,7 @@ def _addr(name: str | None, addr: str | None) -> str:
     return addr or name or ""
 
 
-def _summary(row: sqlite3.Row, snippet: str | None = None) -> dict:
+def _summary(row: sqlite3.Row, snippet: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
     to = json.loads(row["to_json"] or "[]")
     out = {
         "id": row["id"],
@@ -87,7 +87,9 @@ def _summary(row: sqlite3.Row, snippet: str | None = None) -> dict:
     }
     realm_map = realms.load_realms()
     if realms.configured(realm_map):
-        out["realm"] = realms.realm_of(row["account"], realm_map) or "unassigned"
+        held = realms.realms_of_message(conn, row["id"], realm_map) if conn is not None else []
+        # Merged mail held in both realms reads "work+private".
+        out["realm"] = "+".join(held) if len(held) > 1 else (realms.realm_of(row["account"], realm_map) or "unassigned")
     if snippet is not None:
         out["snippet"] = snippet
     else:
@@ -162,7 +164,7 @@ def _filter_clauses(
         raise ToolInputError(f"realm must be one of {', '.join(realms.FENCES)}")
     if realm != "all":
         ids = realms.account_ids(archive.conn, realm)
-        where.append(f"m.account_id IN ({','.join(str(int(i)) for i in ids)})" if ids else "0")
+        where.append(realms.message_in_accounts_sql("m", ids))
     lo, hi = _parse_date(date_from), _parse_date(date_to, end=True)
     if lo is not None:
         where.append("m.date_ts >= ?")
@@ -262,7 +264,7 @@ def _search_emails(
             if not used:
                 raise ToolInputError("query has no searchable words") from None
             rows = archive.conn.execute(sql, [used, *params, limit, offset]).fetchall()
-        results = [_summary(r, r["snip"]) for r in rows]
+        results = [_summary(r, r["snip"], archive.conn) for r in rows]
     else:
         used = None
         order = "m.date_ts ASC" if sort == "date_asc" else "m.date_ts DESC"
@@ -273,7 +275,7 @@ def _search_emails(
             + f" ORDER BY {order} LIMIT ? OFFSET ?"
         )
         rows = archive.conn.execute(sql, [*params, limit, offset]).fetchall()
-        results = [_summary(r) for r in rows]
+        results = [_summary(r, conn=archive.conn) for r in rows]
     total = rows[0]["total"] if rows else 0
     out: dict = {"total": total, "offset": offset, "count": len(results), "results": results}
     if used is not None and used != query:

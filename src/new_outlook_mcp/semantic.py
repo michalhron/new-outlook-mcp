@@ -394,7 +394,7 @@ def _result(row: sqlite3.Row, *, score: float, vec: dict | None, kw: dict | None
         snippet = _trim(vec["text"])
     else:
         snippet = kw["snippet"] if kw and kw.get("snippet") else None
-    out = tools._summary(row, snippet)
+    out = tools._summary(row, snippet, archive.conn)
     out["score"] = round(score, 4)
     out["matched"] = "both" if vec and kw else ("semantic" if vec else "keyword")
     if vec:

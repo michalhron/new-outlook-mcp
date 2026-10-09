@@ -313,7 +313,10 @@ def _hidden_message_sql(conn: sqlite3.Connection, rules: Rules, m: str) -> tuple
     if accounts:
         parts.append(f"{m}.account_id IN ({_int_list(accounts)})")
     if rules.fence is not None:
-        parts.append(_fence_sql(f"{m}.account_id", _fence_account_ids(conn, rules)))
+        # Hidden unless some account holding the message is inside the fence (merged mail counts for each).
+        inside = [r[0] for r in conn.execute("SELECT id, name FROM accounts")
+                  if realms_mod.realm_of(r[1], rules.realms) == rules.fence]
+        parts.append(f"NOT {realms_mod.message_in_accounts_sql(m, inside)}")
     p, q = _sender_sql(f"{m}.from_addr", rules)
     parts, params = parts + p, params + q
     for k in rules.subject_keywords:

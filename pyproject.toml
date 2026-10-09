@@ -22,8 +22,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Search by meaning, all on-device. The model is fetched once by `new-outlook embed --download`.
+semantic = [
+    "sentence-transformers>=3",
+    "sqlite-vec>=0.1.6",
+    "numpy>=1.26",
+]
 watch = ["watchdog>=4"]
-dev = ["pytest>=8", "ruff>=0.6", "watchdog>=4"]
+dev = ["pytest>=8", "ruff>=0.6", "watchdog>=4", "numpy>=1.26", "sqlite-vec>=0.1.6"]
 
 [project.scripts]
 new-outlook = "new_outlook_mcp.cli:main"
@@ -35,3 +41,4 @@ packages = ["src/new_outlook_mcp"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["slow: loads the real embedding model (set RUN_REAL_MODEL=1)"]

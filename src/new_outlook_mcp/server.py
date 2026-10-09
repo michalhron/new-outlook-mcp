@@ -64,11 +64,44 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         sort: Literal["relevance", "date_desc", "date_asc"] = "relevance",
         limit: Annotated[int, Field(ge=1, le=200)] = 20,
         offset: Annotated[int, Field(ge=0)] = 0,
+        mode: Annotated[Literal["keyword", "semantic", "hybrid"], Field(
+            description="keyword: exact words (default). semantic: by meaning. hybrid: both, fused. "
+                        "semantic and hybrid need `new-outlook embed` to have been run")] = "keyword",
     ) -> dict:
         """Search archived emails. Returns summaries with an `id` for get_email/get_thread."""
         return call(tools.search_emails, query, from_=sender, to=recipient, folder=folder, account=account,
                     date_from=date_from, date_to=date_to, has_attachment=has_attachment,
-                    attachment_name=attachment_name, sort=sort, limit=limit, offset=offset)
+                    attachment_name=attachment_name, sort=sort, limit=limit, offset=offset, mode=mode)
+
+    @server.tool(annotations=READ_ONLY)
+    def semantic_search(
+        query: Annotated[str, Field(description="What you remember, in your own words. English or Czech. No exact keywords needed")],
+        mode: Annotated[Literal["hybrid", "semantic"], Field(
+            description="hybrid: meaning plus keywords, fused (default). semantic: meaning only")] = "hybrid",
+        sender: Annotated[str | None, Field(description="From: sender name or address contains this text")] = None,
+        recipient: Annotated[str | None, Field(description="To/Cc/Bcc contains this text")] = None,
+        folder: Annotated[str | None, Field(description="Folder name contains this text")] = None,
+        account: Annotated[str | None, Field(description="Account name contains this text")] = None,
+        date_from: Annotated[str | None, Field(description="Earliest date, YYYY-MM-DD or ISO 8601 (UTC)")] = None,
+        date_to: Annotated[str | None, Field(description="Latest date, inclusive, YYYY-MM-DD or ISO 8601 (UTC)")] = None,
+        has_attachment: bool | None = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 10,
+    ) -> dict:
+        """Find emails and attachments by meaning. Each result is one email with the best matching passage as
+        its `snippet`, `match` says whether that passage is the subject, the body or an attachment, and
+        `matched` says whether meaning, keywords or both found it."""
+        return call(tools.semantic_search, query, mode=mode, limit=limit, from_=sender, to=recipient,
+                    folder=folder, account=account, date_from=date_from, date_to=date_to,
+                    has_attachment=has_attachment)
+
+    @server.tool(annotations=READ_ONLY)
+    def find_similar(
+        email_id: Annotated[str | None, Field(description="Archive id or Message-ID of an email")] = None,
+        attachment_id: Annotated[int | None, Field(description="attachment_id from list_attachments")] = None,
+        limit: Annotated[int, Field(ge=1, le=100)] = 10,
+    ) -> dict:
+        """Find emails similar in content to an email or to one attachment. Give exactly one of the two ids."""
+        return call(tools.find_similar, email_id, attachment_id=attachment_id, limit=limit)
 
     @server.tool(annotations=READ_ONLY)
     def get_email(

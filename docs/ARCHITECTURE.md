@@ -25,11 +25,13 @@ Package `src/new_outlook_mcp/`:
 | `importers/hxformat.py` | HxStore decoder: header, blocks, LZ4, objects, messages, attachments, events, layout guard. |
 | `importers/hxstore.py` | HxStore importer: live copy with retry, records, `Files/` references, orphan scan hook. |
 | `importers/ics_feed.py`, `feeds.py`, `ics.py` | Published ICS feeds: fetch with ETag, parse, `.ics` drafts. |
+| `importers/eml.py` | Folders of `.eml` files (for example mcp-hey's archive folder), read in place. |
 | `orphans.py` | Index files in `Files/` that no record references; match bodies back to messages. |
 | `calendar_store.py` | `EventRecord`, event merge by UID, timezone handling, recurrence expansion. |
 | `mime.py` | RFC 822 parsing, HTML to text, attachment parts. |
 | `attachments.py` | Locate attachment bytes (file, MIME file, stored raw source) and extract text. |
-| `privacy.py` | Exclusion rules: import-time predicates, SQL predicates for queries, purge, result id filter. |
+| `privacy.py` | Exclusion rules: import-time predicates, SQL predicates for queries, purge, result id filter. Also applies the realm fence. |
+| `realms.py` | Work and private realms: the `[realms]` table, the default search realm, the server fence. |
 | `tools.py`, `caltools.py` | Tool implementations as plain functions over an `Archive`. |
 | `chunking.py`, `embedder.py`, `vectors.py`, `semantic.py` | Search by meaning: chunking, embedding backends, vector store, hybrid retrieval (optional extra). |
 | `server.py` | MCP server (stdio). Thin wrappers that call `tools` / `caltools` / `semantic`. |

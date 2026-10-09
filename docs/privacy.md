@@ -50,6 +50,8 @@ The rules live in `config.toml` under `[exclude]`. You can edit them there. A ty
 - Orphan files linked to a message follow that message. Unlinked files have no account, folder or recipients, so they are hidden when their name or text matches an attachment-name, subject-keyword, sender or domain rule.
 - `archive_status` reports only how many items are hidden.
 
+Realms keep work and private mail apart inside the archive: [work-and-private.md](work-and-private.md).
+
 ## Purging
 
 A rule added after mail was imported hides that mail but leaves it in `archive.db`. `purge-excluded` deletes it for good:

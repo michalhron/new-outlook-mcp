@@ -11,6 +11,7 @@ Where the mail comes from, what each source holds, and how the archive combines 
 | New Outlook journal | `Main Profile/hxcore.hfl` | Unknown. Possibly a write-ahead log | n/a | Copied with every snapshot, not parsed yet | Open question |
 | Cached files | `Main Profile/Files/S0/<n>/Attachments/`, `EFMData/` | Attachment files and large message bodies, including many whose messages left the cache | Long. Outlook keeps files after the messages are gone | Read in place, read-only. Text is copied into the archive | Good for content. Orphan files have no sender or folder |
 | Published calendar (optional) | An ICS link you publish from Outlook on the web | Your calendar | Whatever you publish | HTTPS with ETag caching, only to links you add | High |
+| `.eml` folders (optional) | Folders you add with `new-outlook eml add`, for example mcp-hey's `HEY_ARCHIVE_DIR` | Mail from other mailboxes, such as the HEY messages you read | What lands in the folder | Read in place, read-only, one import per file | High. Standard RFC 822 files ([work-and-private.md](work-and-private.md)) |
 
 <p align="center"><img src="assets/coverage.svg" alt="Time coverage: the legacy archive until the legacy client stopped, New Outlook densely for two months and sparsely before, cached files over a long span, the ICS feed for what you publish, and the archive across all of it." width="100%"></p>
 

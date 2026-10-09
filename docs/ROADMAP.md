@@ -75,3 +75,12 @@ Ground rules for every phase:
 - [ ] Measure the "done when" below on the real archive
 
 **Done when:** queries phrased from memory ("the email where someone suggested reframing the hype paper", "reviewer comments about construct validity") find the right message or attachment in the top 5, without matching keywords, across the full archive. Embedding the existing archive takes under an hour on this Mac.
+
+## Phase 6: Private mail next to work mail
+- [x] `.eml` folder importer, read in place, one import per file (`new-outlook eml add`)
+- [x] mcp-hey saves the HEY messages you read as `.eml` files when `HEY_ARCHIVE_DIR` is set (no extra requests to HEY)
+- [x] Realms: accounts assigned to work or private, searches cover work by default, `realm` widens a call
+- [x] Optional hard fence per server (`--realm work`), applied with the privacy predicates, never to import or purge
+- [ ] Use it with the real HEY account for a week and check what the archive holds
+
+**Done when:** a question about private mail finds the HEY message you read last week, and a work-only server never shows it.

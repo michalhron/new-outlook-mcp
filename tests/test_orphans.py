@@ -283,3 +283,49 @@ def test_validate_report_has_counts_and_no_file_names(tmp_path, legacy_data):
     assert "[PASS] Files/ cache" in report
     for name in ("secret-minutes", "private-chapter", "tiny-logo", "21.dat", "agenda", "Confidential", "walrus"):
         assert name not in report
+
+
+# ------------------------------------------------------------ privacy scopes
+
+def _rules(**kw):
+    from new_outlook_mcp import privacy
+
+    r = privacy.Rules()
+    for kind, values in kw.items():
+        r.add(kind, values)
+    privacy.save_rules(r)
+    return r
+
+
+def test_privacy_rules_apply_to_orphans_at_index_and_query_time(archive, profile, tmp_path):
+    from new_outlook_mcp import privacy, tools
+
+    _rules(attachment_names=["minutes*"], subject_keywords=["zeppelin"])
+    res, _ = _sync(archive, profile, tmp_path)
+    names = {r["filename"] for r in _rows(archive)}
+    assert "minutes.pdf" not in names  # never stored
+    assert not any("zeppelin" in (r["text"] or "") for r in _rows(archive))
+    assert res.details["files"]["excluded_by_privacy"] == 2
+    # A rule added later hides an already indexed file at query time ...
+    _rules(attachment_names=["minutes*"], subject_keywords=["zeppelin", "lighthouses"])
+    hits = tools.search_files(archive, "lighthouses")
+    assert hits["total"] == 0
+    hidden = next(r for r in _rows(archive) if r["filename"] == "chapter.docx")
+    import pytest as _pt
+
+    with _pt.raises(tools.ToolInputError, match="no orphan file"):
+        tools.get_attachment(archive, f"orphan:{hidden['id']}")
+    # ... and purge-excluded deletes it, text included.
+    out = privacy.purge(archive, privacy.load_rules())
+    assert out["orphan_files"] == 1
+    assert not any(r["filename"] == "chapter.docx" for r in _rows(archive))
+
+
+def test_orphan_body_text_with_excluded_sender_domain_is_hidden(archive, profile, tmp_path):
+    from new_outlook_mcp import tools
+
+    (profile / S0 / "EFMData" / "16.dat").write_bytes(_html("Grades from registrar@grades.example.edu attached."))
+    _sync(archive, profile, tmp_path)
+    assert tools.search_files(archive, "registrar")["total"] == 1
+    _rules(domains=["example.edu"])
+    assert tools.search_files(archive, "registrar")["total"] == 0

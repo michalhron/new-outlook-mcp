@@ -42,6 +42,7 @@ COUNTERS = (
     "attachment_files", "attachment_linked", "attachment_orphans", "body_files", "body_linked", "body_orphans",
     "body_linked_back", "body_linked_by_message_id", "body_linked_by_subject_date", "bodies_upgraded",
     "small_images_skipped", "cleanup_dirs_skipped", "hidden_or_temporary_skipped", "unreadable",
+    "excluded_by_privacy",
     "text_extracted", "no_text_expected", "text_extraction_failed", "too_large_for_text",
     "new_or_changed", "unchanged",
 )
@@ -175,6 +176,9 @@ def index_files(archive: Archive, profile_dir: Path, linked: set[str], *, includ
     s0 = Path(profile_dir) / "Files" / "S0"
     if not s0.is_dir():
         return None
+    from . import privacy
+
+    rules = privacy.load_rules()  # an invalid config raises: no files are indexed (fail closed)
     conn = archive.conn
     counts: Counter = Counter(dict.fromkeys(COUNTERS, 0))
     run_stamp = _now()
@@ -230,6 +234,12 @@ def index_files(archive: Archive, profile_dir: Path, linked: set[str], *, includ
                     archive, path, name, st.st_size, mtime, counts)
             except OSError:
                 counts["unreadable"] += 1
+                continue
+            if privacy.excludes_orphan(fields.get("filename"), fields.get("text"), rules) and fields.get("message_pk") is None:
+                counts["excluded_by_privacy"] += 1
+                if existing is not None:
+                    conn.execute("DELETE FROM orphan_fts WHERE rowid = ?", (existing["id"],))
+                    conn.execute("DELETE FROM orphan_files WHERE id = ?", (existing["id"],))
                 continue
             fields.update(kind=kind, rel_path=rel, local_path=resolved, size=st.st_size, mtime=mtime)
             _store(archive, existing, fields, _now(), run_stamp)

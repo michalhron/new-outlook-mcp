@@ -46,10 +46,10 @@ Ground rules for every phase:
 ## Phase 3: Continuous sync
 - [x] launchd agent every ~36 h + `sync_now` tool (now the fallback)
 - [x] Near-live sync: `new-outlook watch` (watchdog or polling, debounce, rate limit, backoff) with its own LaunchAgent, heartbeat file and `sync_health` in `archive_status`
-- [x] Archive only grows. Mail older than New Outlook's window is retained.
+- [x] Archive only grows (except `purge-excluded`). Mail older than New Outlook's window is retained.
 - [x] Drift detection: notify if an import returns zero or far fewer records than expected (Outlook update changed the format)
 - [x] Cross-source dedup (legacy ↔ hxstore overlap Apr–Oct 2026)
-- [ ] **Privacy scopes** (before the archive grows): config-defined exclusions (folders, senders, keywords) that are never indexed or returned. Needed for GDPR-sensitive mail such as grades, hiring and HR.
+- [x] **Privacy scopes**: config-defined exclusions (accounts, folders, senders, domains, subject keywords, attachment names, recipients) that are never stored and never returned by any tool, plus `purge-excluded` for mail imported earlier. Needed for GDPR-sensitive mail such as grades, hiring and HR.
 
 **Done when:** new mail shows up in the archive without manual steps, an Outlook update that breaks parsing triggers a notification, and excluded mail is not retrievable through any tool.
 

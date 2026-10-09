@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import sqlite3
@@ -269,6 +270,15 @@ def normalize_subject(subject: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+def _register_functions(conn: sqlite3.Connection) -> None:
+    """SQL helpers for privacy rules: SQLite's own lower() and LIKE fold only ASCII."""
+    conn.create_function("nol_casefold", 1, lambda v: v.casefold() if isinstance(v, str) else "", deterministic=True)
+    conn.create_function(
+        "nol_fnmatch", 2,
+        lambda name, pat: int(isinstance(name, str) and fnmatch.fnmatchcase(name.casefold(), pat)),
+        deterministic=True)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -291,6 +301,7 @@ class Archive:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        _register_functions(self.conn)
         self.conn.execute("PRAGMA foreign_keys = ON")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode = WAL")
@@ -553,35 +564,52 @@ class Archive:
         return self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orphan_files'").fetchone() is not None
 
-    def counts(self) -> dict[str, int]:
-        q = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
-        orphans = q("SELECT COUNT(*) FROM orphan_files") if self.has_orphan_table() else 0
-        return {
-            "messages": q("SELECT COUNT(*) FROM messages"),
+    def counts(self, *, message_filter: tuple[str, list] | None = None,
+               event_filter: tuple[str, list] | None = None) -> dict[str, int]:
+        """Row counts. The filters are SQL predicates on `m` (messages) and `e` (events), see privacy.py."""
+        mf, mp = message_filter or ("1", [])
+        ef, ep = event_filter or ("1", [])
+        q = lambda sql, params=(): self.conn.execute(sql, params).fetchone()[0]  # noqa: E731
+        out = {
+            "messages": q(f"SELECT COUNT(*) FROM messages m WHERE {mf}", mp),
             "folders": q("SELECT COUNT(*) FROM folders"),
-            "accounts": len(self.visible_accounts()),
-            "attachments": q("SELECT COUNT(*) FROM attachments"),
-            "orphan_files": orphans,
-            "events": q("SELECT COUNT(*) FROM events"),
-            "event_instances": q("SELECT COUNT(*) FROM event_instances"),
+            "accounts": len(self.visible_accounts(message_filter)),
+            "attachments": q("SELECT COUNT(*) FROM attachments a JOIN messages m ON m.id = a.message_pk"
+                             f" WHERE {mf}", mp),
+            "events": q(f"SELECT COUNT(*) FROM events e WHERE {ef}", ep),
+            "event_instances": q("SELECT COUNT(*) FROM event_instances i JOIN events e ON e.id = i.event_pk"
+                                 f" WHERE {ef}", ep),
+            "orphan_files": q("SELECT COUNT(*) FROM orphan_files o LEFT JOIN messages m ON m.id = o.message_pk"
+                              f" WHERE o.message_pk IS NULL OR ({mf})", mp) if self.has_orphan_table() else 0,
         }
+        return out
 
-    def visible_accounts(self) -> list[str]:
-        """Account names to show: everything except internal accounts that own no messages."""
+    def visible_accounts(self, message_filter: tuple[str, list] | None = None) -> list[str]:
+        """Account names to show.
+
+        Hidden: internal accounts that own no messages, and (with a privacy filter on `m`)
+        accounts whose messages are all excluded.
+        """
+        mf, mp = message_filter or ("1", [])
         rows = self.conn.execute(
-            "SELECT a.name, EXISTS(SELECT 1 FROM messages m WHERE m.account_id = a.id) FROM accounts a ORDER BY a.name"
+            "SELECT a.name, EXISTS(SELECT 1 FROM messages m WHERE m.account_id = a.id),"
+            f" EXISTS(SELECT 1 FROM messages m WHERE m.account_id = a.id AND ({mf})) FROM accounts a ORDER BY a.name",
+            mp,
         ).fetchall()
-        return [name for name, has_mail in rows if has_mail or not INTERNAL_ACCOUNT.search(name)]
+        return [name for name, has_mail, has_visible in rows
+                if has_visible or (not has_mail and not INTERNAL_ACCOUNT.search(name))]
 
-    def account_overview(self) -> list[dict]:
-        """Messages and newest message date per account and source (hidden accounts left out)."""
-        visible = set(self.visible_accounts())
+    def account_overview(self, message_filter: tuple[str, list] | None = None) -> list[dict]:
+        """Messages and oldest/newest message date per account and source, visible messages only."""
+        mf, mp = message_filter or ("1", [])
+        visible = set(self.visible_accounts(message_filter))
         rows = self.conn.execute(
-            """SELECT COALESCE(a.name, '(no account)') AS account, s.source, COUNT(DISTINCT m.id) AS messages,
+            f"""SELECT COALESCE(a.name, '(no account)') AS account, s.source, COUNT(DISTINCT m.id) AS messages,
                       MAX(m.date_utc) AS newest, MIN(m.date_utc) AS oldest
                FROM message_sources s JOIN messages m ON m.id = s.message_pk
                LEFT JOIN accounts a ON a.id = m.account_id
-               GROUP BY account, s.source ORDER BY account, s.source"""
+               WHERE {mf}
+               GROUP BY account, s.source ORDER BY account, s.source""", mp
         ).fetchall()
         return [dict(r) for r in rows if r["account"] in visible or r["account"] == "(no account)"]
 
@@ -591,19 +619,23 @@ class Archive:
             return None
         return name
 
-    def coverage(self) -> list[dict]:
+    def coverage(self, message_filter: tuple[str, list] | None = None) -> list[dict]:
+        mf, mp = message_filter or ("1", [])
         rows = self.conn.execute(
-            """SELECT s.source, COUNT(*) AS n, MIN(m.date_utc) AS first, MAX(m.date_utc) AS last
+            f"""SELECT s.source, COUNT(*) AS n, MIN(m.date_utc) AS first, MAX(m.date_utc) AS last
                FROM message_sources s JOIN messages m ON m.id = s.message_pk
-               GROUP BY s.source ORDER BY s.source"""
+               WHERE {mf}
+               GROUP BY s.source ORDER BY s.source""", mp
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def calendar_coverage(self) -> list[dict]:
+    def calendar_coverage(self, event_filter: tuple[str, list] | None = None) -> list[dict]:
+        ef, ep = event_filter or ("1", [])
         rows = self.conn.execute(
-            """SELECT s.source, COUNT(*) AS n, MIN(e.start_utc) AS first, MAX(e.start_utc) AS last
+            f"""SELECT s.source, COUNT(*) AS n, MIN(e.start_utc) AS first, MAX(e.start_utc) AS last
                FROM event_sources s JOIN events e ON e.id = s.event_pk
-               GROUP BY s.source ORDER BY s.source"""
+               WHERE {ef}
+               GROUP BY s.source ORDER BY s.source""", ep
         ).fetchall()
         return [dict(r) for r in rows]
 

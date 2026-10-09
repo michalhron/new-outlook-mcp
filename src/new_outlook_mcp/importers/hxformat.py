@@ -275,13 +275,14 @@ class ObjectStats:
     layout_mismatch: collections.Counter
 
 
-def iter_objects(d, block_stats: BlockStats, classes: set[int], obj_stats: ObjectStats) -> Iterator[Obj]:
+def iter_objects(d, block_stats: BlockStats, classes: set[int] | None, obj_stats: ObjectStats) -> Iterator[Obj]:
+    """Objects in all valid blocks. `classes=None` yields every class."""
     for block, x in iter_payloads(d, block_stats):
         for m in _ENVELOPE.finditer(x):
             fs, length = struct.unpack("<HI", m.group(1) + m.group(2))
             cls = struct.unpack("<H", m.group(3))[0]
             p = m.start()
-            if fs < 0x78 or length < fs or length > len(x) - p or cls not in classes:
+            if fs < 0x78 or length < fs or length > len(x) - p or (classes is not None and cls not in classes):
                 continue
             oid, kind, owner, oid2, owner2 = struct.unpack_from("<QIQQQ", x, p + 0x14)
             if oid != oid2 or owner2 not in (owner, oid, 0xFFFFFFFFFFFFFFFE):
@@ -614,3 +615,50 @@ def iter_events(store: Store) -> Iterator[HxEvent]:
             calendar=cal_name,
             account=cal_account,
         )
+
+
+# ------------------------------------------------------- generic scanning
+
+def scan_newest(path: Path, *, with_header: bool = True) -> tuple[dict[tuple[int, int], Obj], BlockStats, ObjectStats]:
+    """Newest copy of every object of every class, keyed by (class, id).
+
+    `with_header=False` scans any file for blocks (used for hxcore.hfl, whose layout is unknown).
+    Layout mismatches are counted, not raised: this is for analysis, not import.
+    """
+    blocks = BlockStats()
+    objs = ObjectStats(collections.Counter(), collections.Counter())
+    newest: dict[tuple[int, int], Obj] = {}
+    if Path(path).stat().st_size == 0:
+        if with_header:
+            raise HxStoreFormatError("empty file")
+        return newest, blocks, objs
+    d = _open(path)
+    try:
+        if with_header:
+            check_header(d)
+        for ob in iter_objects(d, blocks, None, objs):
+            key = (ob.cls, ob.id)
+            cur = newest.get(key)
+            if cur is None or (ob.stamp, ob.block) > (cur.stamp, cur.block):
+                newest[key] = ob
+    finally:
+        d.close()
+    return newest, blocks, objs
+
+
+def strings_of(ob: Obj) -> list[tuple[int, str, str]]:
+    """Every descriptor in the fixed region that points at a UTF-16 string: (offset, area, text).
+
+    Descriptors sit on 4-byte boundaries. A few false positives are possible;
+    callers use this for structural diffs, not for import.
+    """
+    out = []
+    for rel in range(0x78, ob.fs - 7, 4):
+        off, ln = struct.unpack_from("<II", ob.raw, rel)
+        n = ln & 0x7FFFFFFF
+        if n < 4 or n % 2 or n > 1 << 20:
+            continue
+        t = ob.text(rel)
+        if t and t.isprintable():
+            out.append((rel, "strings" if ln >> 31 else "area1", t))
+    return out

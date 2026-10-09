@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from outlook_archive_mcp.importers import olk15
+from new_outlook_mcp.importers import olk15
 
 MAGIC = olk15.MAGIC
 
@@ -221,7 +221,7 @@ def tz_collection(tzid: str) -> bytes:
 
 def _add_legacy_calendar(conn: sqlite3.Connection, data: Path) -> None:
     """Five synthetic events in a 'Calendar' folder. See test_calendar.py for what each one checks."""
-    from outlook_archive_mcp.importers import legacy_calendar as lc
+    from new_outlook_mcp.importers import legacy_calendar as lc
 
     (data / "Events/S0").mkdir(parents=True, exist_ok=True)
     conn.executescript(

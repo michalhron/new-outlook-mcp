@@ -9,17 +9,17 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from synthetic import build_legacy_data  # noqa: E402
 
-from outlook_archive_mcp.db import Archive  # noqa: E402
-from outlook_archive_mcp.sync import sync  # noqa: E402
+from new_outlook_mcp.db import Archive  # noqa: E402
+from new_outlook_mcp.sync import sync  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
     """Keep every default path inside the test's temp dir."""
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("OUTLOOK_ARCHIVE_HOME", str(tmp_path / "app"))
+    monkeypatch.setenv("NEW_OUTLOOK_HOME", str(tmp_path / "app"))
     monkeypatch.setenv("OUTLOOK_PROFILE_DIR", str(tmp_path / "profile-missing"))
-    monkeypatch.setenv("OUTLOOK_ARCHIVE_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("NEW_OUTLOOK_LOG_DIR", str(tmp_path / "logs"))
 
 
 @pytest.fixture

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_NAME = "outlook-archive-mcp"
+APP_NAME = "new-outlook-mcp"
 
 
 def _env_path(var: str, default: Path) -> Path:
@@ -32,11 +32,11 @@ def hxstore_path() -> Path:
 
 
 def app_dir() -> Path:
-    return _env_path("OUTLOOK_ARCHIVE_HOME", Path.home() / "Library/Application Support" / APP_NAME)
+    return _env_path("NEW_OUTLOOK_HOME", Path.home() / "Library/Application Support" / APP_NAME)
 
 
 def db_path() -> Path:
-    return _env_path("OUTLOOK_ARCHIVE_DB", app_dir() / "archive.db")
+    return _env_path("NEW_OUTLOOK_DB", app_dir() / "archive.db")
 
 
 def snapshots_dir() -> Path:
@@ -44,4 +44,4 @@ def snapshots_dir() -> Path:
 
 
 def log_dir() -> Path:
-    return _env_path("OUTLOOK_ARCHIVE_LOG_DIR", Path.home() / "Library/Logs" / APP_NAME)
+    return _env_path("NEW_OUTLOOK_LOG_DIR", Path.home() / "Library/Logs" / APP_NAME)

@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from outlook_archive_mcp import tools
-from outlook_archive_mcp.model import AttachmentInfo, MessageRecord
+from new_outlook_mcp import tools
+from new_outlook_mcp.model import AttachmentInfo, MessageRecord
 
 
 def _minimal_pdf(text: str) -> bytes:

@@ -70,7 +70,8 @@ Ground rules for every phase:
 - [x] Incremental: new mail embedded during sync once `new-outlook embed` has run. Re-embedding is resumable.
 - [x] Tools: `semantic_search(query, filters)` and `find_similar(email_id | attachment_id)`. `search_emails` gains `mode: keyword | semantic | hybrid`.
 - [x] Results return the matching chunk as the snippet, so Claude sees *why* it matched
-- [ ] Respects privacy scopes from Phase 3 (every semantic path calls `privacy.filter_allowed_message_ids`, the scopes themselves plug in there)
+- [x] Respects privacy scopes from Phase 3 (every semantic path calls `privacy.filter_allowed_message_ids`, and `purge-excluded` deletes chunks and vectors)
+- [x] Documented: how chunking, embedding and hybrid ranking work ([semantic-search.md](semantic-search.md))
 - [ ] Measure the "done when" below on the real archive
 
 **Done when:** queries phrased from memory ("the email where someone suggested reframing the hype paper", "reviewer comments about construct validity") find the right message or attachment in the top 5, without matching keywords, across the full archive. Embedding the existing archive takes under an hour on this Mac.

@@ -1,6 +1,6 @@
 # Architecture
 
-This page is for people who want to change the code. The README covers installation and use. [hxstore-notes.md](hxstore-notes.md) and [legacy-notes.md](legacy-notes.md) describe the two Outlook file formats.
+This page is for people who want to change the code. [getting-started.md](getting-started.md) and the other guides linked from the README cover installation and use. [hxstore-notes.md](hxstore-notes.md) and [legacy-notes.md](legacy-notes.md) describe the two Outlook file formats.
 
 ## Data flow
 

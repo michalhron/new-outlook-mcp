@@ -407,3 +407,17 @@ def test_real_privacy_rules_hide_semantic_results(archive, corpus, backend):
             semantic.find_similar(archive, email_id=str(corpus["hype"]))
     finally:
         privacy.save_rules(privacy.Rules())
+
+
+def test_purge_removes_chunks_and_vectors(archive, corpus, backend):
+    table, col = ("chunk_vec", "rowid") if backend == "vec0" else ("chunk_vectors", "chunk_id")
+    ids = [r[0] for r in archive.conn.execute("SELECT id FROM chunks WHERE message_pk = ?", (corpus["hype"],))]
+    assert ids
+    rules = privacy.Rules()
+    rules.add("senders", ["alice@example.org"])
+    privacy.purge(archive, rules)
+    assert not archive.conn.execute("SELECT 1 FROM chunks WHERE message_pk = ?", (corpus["hype"],)).fetchone()
+    marks = ",".join("?" * len(ids))
+    assert archive.conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IN ({marks})", ids).fetchone()[0] == 0
+    other = semantic.semantic_search(archive, "quarterly budget", mode="semantic")
+    assert corpus["budget"] in {r["id"] for r in other["results"]}

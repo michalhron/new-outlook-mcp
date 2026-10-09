@@ -12,7 +12,7 @@ client no longer touches (it cannot connect any more), so they are read in place
 read-only. Point the importer at a `backup-legacy` copy to avoid touching
 Outlook's folder at all.
 
-See README "Legacy schema: verified vs assumed" for what each column mapping
+See docs/legacy-notes.md for what each column mapping
 rests on.
 """
 

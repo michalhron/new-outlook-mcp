@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import gzip
 import logging
+import shutil
+import time
 from collections.abc import Iterator
 from datetime import timezone
 from pathlib import Path
@@ -19,7 +21,7 @@ from .. import mime
 from ..calendar_store import AttendeeInfo, EventRecord
 from ..ics import find_meeting_url
 from ..model import AttachmentInfo, MessageRecord
-from ..snapshot import SnapshotError, stable_copy
+from ..snapshot import SnapshotError
 from . import hxformat
 from .base import Importer
 from .hxformat import HxStoreFormatError  # noqa: F401  (re-exported)
@@ -27,6 +29,17 @@ from .hxformat import HxStoreFormatError  # noqa: F401  (re-exported)
 log = logging.getLogger(__name__)
 
 MAX_BODY_FILE = 50 * 1024 * 1024
+HFL_NAME = "hxcore.hfl"
+#: A quiet store has about 0.1% torn/stale blocks. Copy again once when more than
+#: MAX_FAILED_RATIO and at least MIN_FAILED_BLOCKS blocks fail.
+MAX_FAILED_RATIO = 0.02
+MIN_FAILED_BLOCKS = 5
+COPY_ATTEMPTS = 2
+RETRY_DELAY = 2.0
+
+
+def _too_torn(b: hxformat.BlockStats) -> bool:
+    return b.failed >= MIN_FAILED_BLOCKS and b.failed_ratio > MAX_FAILED_RATIO
 
 
 def _fmt(name: str | None, addr: str | None) -> str | None:
@@ -49,22 +62,54 @@ class HxStoreImporter(Importer):
         return self.source_path.is_file()
 
     def snapshot(self, dest: Path) -> Path:
+        """Copy HxStore.hxd (+ hxcore.hfl) while Outlook may be running, then decode the copy.
+
+        The scheduled sync cannot quit Outlook, so the copy may catch blocks mid-write.
+        Such blocks fail their CRCs and are skipped; most objects exist in several
+        copies, so older intact versions fill in. If more than MAX_FAILED_RATIO of the
+        blocks fail, the copy is taken once more and the better of the two is used.
+        """
         if not self.available():
             raise SnapshotError(f"HxStore not found: {self.source_path}")
-        return stable_copy(self.source_path, dest / self.source_path.name)
+        best: tuple[hxformat.Store, Path] | None = None
+        for attempt in range(1, COPY_ATTEMPTS + 1):
+            target = dest / f"attempt{attempt}"
+            target.mkdir(parents=True, exist_ok=True)
+            hxd = target / self.source_path.name
+            shutil.copy2(self.source_path, hxd)
+            hfl = self.source_path.with_name(HFL_NAME)
+            if hfl.exists():
+                shutil.copy2(hfl, target / HFL_NAME)
+            store = hxformat.Store(hxd)  # raises on unknown version or changed layout
+            self.details["copy_attempts"] = attempt
+            if best is None or store.blocks.failed_ratio < best[0].blocks.failed_ratio:
+                best = (store, hxd)
+            if not _too_torn(store.blocks):
+                break
+            log.warning("HxStore copy %d: %d of %d blocks failed; copying again", attempt,
+                        store.blocks.failed, store.blocks.found)
+            time.sleep(RETRY_DELAY)
+        store, hxd = best
+        b = store.blocks
+        if _too_torn(b):
+            self.stats.warnings.append(
+                f"{b.failed} of {b.found} HxStore blocks failed CRC/LZ4 even after a second copy "
+                "(Outlook was writing heavily); some recent changes may be missing until the next sync")
+        self._store = store
+        self.details.update({
+            "store_version": store.version,
+            "blocks_found": b.found, "blocks_ok": b.valid, "blocks_crc_failed": b.crc_failed,
+            "blocks_decode_failed": b.decode_failed,
+            "hxcore_hfl_copied": (hxd.parent / HFL_NAME).exists(),
+            "objects": store.object_counts(),
+        })
+        return hxd
 
     # ---------------------------------------------------------------- helpers
 
     def _store_for(self, snapshot: Path) -> hxformat.Store:
         if self._store is None or self._store.path != snapshot:
             self._store = hxformat.Store(snapshot)
-            b, o = self._store.blocks, self._store.objects
-            if b.crc_failed or b.decode_failed:
-                self.stats.count("HxStore blocks skipped (CRC or LZ4)", b.crc_failed + b.decode_failed)
-            if o.layout_mismatch:
-                kinds = ", ".join(f"{c:#x}x{n}" for c, n in sorted(o.layout_mismatch.items()))
-                self.stats.warnings.append(f"objects with an unknown layout were skipped ({kinds}): "
-                                           "possible format drift after an Outlook update")
         return self._store
 
     def resolve_ref(self, ref: str | None) -> Path | None:

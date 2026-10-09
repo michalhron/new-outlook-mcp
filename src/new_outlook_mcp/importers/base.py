@@ -47,6 +47,8 @@ class Importer(ABC):
     def __init__(self, source_path: Path):
         self.source_path = Path(source_path)
         self.stats = ImportStats()
+        #: Source-specific numbers for the sync report (e.g. HxStore block counts).
+        self.details: dict = {}
 
     @abstractmethod
     def available(self) -> bool:

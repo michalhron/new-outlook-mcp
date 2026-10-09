@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "outlook-archive-mcp"
+version = "0.1.0"
+description = "Local, read-only MCP server for Outlook for Mac email (legacy archive + New Outlook cache). No online API."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+authors = [{ name = "Michal Hron" }]
+dependencies = [
+    "mcp>=2.2,<3",
+    # attachment text extraction
+    "pypdf>=4",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+outlook-archive = "outlook_archive_mcp.cli:main"
+outlook-archive-mcp = "outlook_archive_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/outlook_archive_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

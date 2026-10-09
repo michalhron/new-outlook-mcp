@@ -27,7 +27,7 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from .. import mime
-from ..model import AttachmentInfo, MessageRecord
+from ..model import AttachmentInfo, MessageRecord, first_plausible, plausible_date
 from ..snapshot import copy_sqlite, open_sqlite_immutable
 from . import olk15
 from .base import Importer
@@ -102,6 +102,12 @@ class LegacyImporter(Importer):
         return {r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')}
 
     def _folders(self, conn: sqlite3.Connection, tables: set[str]) -> dict[int, str]:
+        """Folder id -> path such as "Inbox/Projects".
+
+        Root folders often have no name. The root that holds the Inbox is the mailbox
+        itself and is left out of paths. Other unnamed roots are separate stores: they
+        become "On My Computer" (account 0) or "Other store", "Other store 2", ...
+        """
         if "Folders" not in tables:
             self.stats.warnings.append("no Folders table")
             return {}
@@ -110,29 +116,77 @@ class LegacyImporter(Importer):
             self.stats.warnings.append("Folders table lacks Record_RecordID/Folder_Name")
             return {}
         parent_col = "Folder_ParentID" if "Folder_ParentID" in cols else "NULL"
-        rows = conn.execute(f"SELECT Record_RecordID, Folder_Name, {parent_col} FROM Folders").fetchall()
-        info = {r[0]: (r[1] or f"folder-{r[0]}", r[2]) for r in rows}
+        acc_col = "Record_AccountUID" if "Record_AccountUID" in cols else "NULL"
+        rows = conn.execute(f"SELECT Record_RecordID, Folder_Name, {parent_col}, {acc_col} FROM Folders").fetchall()
+        info = {r[0]: ((r[1] or "").strip(), r[2], r[3]) for r in rows}
 
-        def path(fid: int, depth: int = 0) -> str:
-            name, parent = info[fid]
-            if parent in info and parent != fid and depth < 20:
-                return path(parent, depth + 1) + "/" + name
-            return name
+        def root_of(fid: int) -> int:
+            seen = set()
+            while info[fid][1] in info and info[fid][1] != fid and fid not in seen:
+                seen.add(fid)
+                fid = info[fid][1]
+            return fid
 
-        return {fid: path(fid) for fid in info}
+        roots_with_inbox = {root_of(f) for f, (name, _, _) in info.items() if name.lower() == "inbox"}
+        root_label: dict[int, str | None] = {}
+        others = 0
+        for fid in sorted(info):
+            name, parent, acc = info[fid]
+            if fid != root_of(fid):
+                continue
+            if name:
+                root_label[fid] = name
+            elif fid in roots_with_inbox:
+                root_label[fid] = None  # the mailbox root: implicit
+            elif acc in (0, None) and acc is not None:
+                root_label[fid] = "On My Computer"
+            else:
+                others += 1
+                root_label[fid] = "Other store" if others == 1 else f"Other store {others}"
+
+        def path(fid: int, depth: int = 0) -> str | None:
+            name, parent, _ = info[fid]
+            if fid in root_label:
+                return root_label[fid]
+            if depth > 20:
+                return name or None
+            head = path(parent, depth + 1) if parent in info else None
+            name = name or f"folder-{fid}"
+            return f"{head}/{name}" if head else name
+
+        return {fid: p for fid in info if (p := path(fid))}
 
     def _accounts(self, conn: sqlite3.Connection, tables: set[str]) -> dict[int, str]:
-        out: dict[int, str] = {}
-        for table in ("AccountsExchange", "AccountsMail"):
-            if table not in tables:
-                continue
-            cols = self._columns(conn, table)
-            if "Record_RecordID" not in cols:
-                continue
-            email_col = "Account_EmailAddress" if "Account_EmailAddress" in cols else "NULL"
-            name_col = "Account_Name" if "Account_Name" in cols else "NULL"
-            for rid, addr, name in conn.execute(f"SELECT Record_RecordID, {email_col}, {name_col} FROM {table}"):
-                out.setdefault(rid, addr or name or f"account-{rid}")
+        """Mail.Record_AccountUID -> account address.
+
+        Verified on real data: Mail.Record_AccountUID equals AccountsExchange.Account_MailAccountUID.
+        AccountsMail rows link to their Exchange account through Account_ExchangeAccountUID.
+        Account 0 holds local folders ("On My Computer").
+        """
+        out: dict[int, str] = {0: "On My Computer"}
+        exchange_by_rid: dict[int, str] = {}
+        if "AccountsExchange" in tables:
+            cols = self._columns(conn, "AccountsExchange")
+            sel = ", ".join(c if c in cols else "NULL" for c in
+                            ("Record_RecordID", "Account_MailAccountUID", "Account_EmailAddress", "Account_Name"))
+            for rid, mail_uid, addr, name in conn.execute(f"SELECT {sel} FROM AccountsExchange"):
+                label = (addr or name or "").strip()
+                if not label:
+                    continue
+                if rid is not None:
+                    exchange_by_rid[rid] = label
+                if mail_uid is not None:
+                    out[mail_uid] = label
+                if rid is not None:
+                    out.setdefault(rid, label)
+        if "AccountsMail" in tables:
+            cols = self._columns(conn, "AccountsMail")
+            sel = ", ".join(c if c in cols else "NULL" for c in
+                            ("Record_RecordID", "Account_ExchangeAccountUID", "Account_EmailAddress", "Account_Name"))
+            for rid, exch_uid, addr, name in conn.execute(f"SELECT {sel} FROM AccountsMail"):
+                label = exchange_by_rid.get(exch_uid) or (addr or name or "").strip()
+                if rid is not None and label:
+                    out.setdefault(rid, label)
         return out
 
     def _blocks(self, conn: sqlite3.Connection, tables: set[str]) -> dict[int, list[tuple[int, str]]]:
@@ -229,7 +283,8 @@ class LegacyImporter(Importer):
             rec.from_addr, rec.from_name = rec.from_name, None
         rec.to = _split_list(col("Message_ToRecipientAddressList")) or _split_list(col("Message_DisplayTo"))
         rec.cc = _split_list(col("Message_CCRecipientAddressList"))
-        rec.date = outlook_time(col("Message_TimeReceived")) or outlook_time(col("Message_TimeSent"))
+        rec.date = first_plausible(outlook_time(col("Message_TimeReceived")), outlook_time(col("Message_TimeSent")),
+                                   outlook_time(col("Record_ModDate")))
         rec.message_id = col("Message_MessageID") or None
         conv = col("Conversation_ConversationID")
         rec.conversation_id = f"legacy:{conv}" if conv not in (None, 0, "") else None
@@ -291,7 +346,7 @@ class LegacyImporter(Importer):
         put("to", parsed.to)
         put("cc", parsed.cc)
         put("bcc", parsed.bcc)
-        put("date", parsed.date)
+        put("date", plausible_date(parsed.date))
         put("in_reply_to", parsed.in_reply_to)
         put("references", parsed.references)
         put("headers", parsed.headers)

@@ -245,6 +245,23 @@ _SUBJECT_PREFIX = re.compile(
 )
 
 
+PLACEHOLDER_ACCOUNT = re.compile(r"account-\d+")
+#: Internal accounts New Outlook creates (e.g. omc@omc.outlook). Hidden unless they own mail.
+INTERNAL_ACCOUNT = re.compile(r"@omc\.outlook$", re.IGNORECASE)
+PLACEHOLDER_FOLDER = re.compile(r"(^|/)folder-\d+(/|$)")
+
+
+def _plausible_bounds() -> tuple[int, int]:
+    from .model import EARLIEST_PLAUSIBLE, FUTURE_SLACK
+
+    return int(EARLIEST_PLAUSIBLE.timestamp()), int((datetime.now(timezone.utc) + FUTURE_SLACK).timestamp())
+
+
+def _plausible_ts(ts: int) -> bool:
+    lo, hi = _plausible_bounds()
+    return lo <= ts <= hi
+
+
 def normalize_subject(subject: str | None) -> str:
     if not subject:
         return ""
@@ -306,8 +323,12 @@ class Archive:
     def _account_id(self, name: str | None) -> int | None:
         if not name:
             return None
-        self.conn.execute("INSERT OR IGNORE INTO accounts(name) VALUES (?)", (name,))
-        return self.conn.execute("SELECT id FROM accounts WHERE name = ?", (name,)).fetchone()[0]
+        name = name.strip()
+        # Case-insensitive: legacy and HxStore may spell the same address differently.
+        row = self.conn.execute("SELECT id FROM accounts WHERE lower(name) = lower(?)", (name,)).fetchone()
+        if row:
+            return row[0]
+        return self.conn.execute("INSERT INTO accounts(name) VALUES (?)", (name,)).lastrowid
 
     def _folder_id(self, account_id: int | None, name: str | None) -> int | None:
         if not name:
@@ -394,9 +415,12 @@ class Archive:
             pk = existing["id"]
             inserted = False
             updates: dict[str, object] = {}
+            stale = self._stale_fields(existing)
             for col, val in values.items():
-                if existing[col] in (None, "") and val not in (None, ""):
+                if (existing[col] in (None, "") or col in stale) and val not in (None, ""):
                     updates[col] = val
+            if "date_ts" in stale and values["date_ts"] is None:
+                updates["date_ts"] = updates["date_utc"] = None  # a sentinel date is worse than none
             for col, val in lists.items():
                 if existing[col] in (None, "", "[]") and val:
                     updates[col] = json.dumps(val, ensure_ascii=False)
@@ -417,6 +441,50 @@ class Archive:
         )
         self._reindex(pk)
         return UpsertResult(pk=pk, inserted=inserted)
+
+    def _stale_fields(self, row: sqlite3.Row) -> set[str]:
+        """Columns of an existing message that hold placeholder values a new import may replace."""
+        stale: set[str] = set()
+        if row["date_ts"] is not None and not _plausible_ts(row["date_ts"]):
+            stale |= {"date_ts", "date_utc"}
+        if row["account_id"] is not None:
+            name = self.conn.execute("SELECT name FROM accounts WHERE id = ?", (row["account_id"],)).fetchone()[0]
+            if PLACEHOLDER_ACCOUNT.fullmatch(name):
+                stale |= {"account_id", "folder_id"}
+        if row["folder_id"] is not None:
+            name = self.conn.execute("SELECT name FROM folders WHERE id = ?", (row["folder_id"],)).fetchone()[0]
+            if PLACEHOLDER_FOLDER.search(name):
+                stale.add("folder_id")
+        return stale
+
+    def keys_needing_repair(self, source: str) -> set[str]:
+        """Source keys whose message has a missing or implausible date or a placeholder label.
+
+        Sync re-reads these even when incremental, so corrected importers repair old rows.
+        """
+        lo, hi = _plausible_bounds()
+        rows = self.conn.execute(
+            """SELECT s.source_key, m.date_ts, a.name, f.name FROM message_sources s
+               JOIN messages m ON m.id = s.message_pk
+               LEFT JOIN accounts a ON a.id = m.account_id LEFT JOIN folders f ON f.id = m.folder_id
+               WHERE s.source = ? AND (m.date_ts IS NULL OR m.date_ts < ? OR m.date_ts > ?
+                     OR a.name GLOB 'account-[0-9]*' OR f.name GLOB '*folder-[0-9]*')""",
+            (source, lo, hi),
+        ).fetchall()
+        return {k for k, ts, acc, fol in rows
+                if ts is None or not _plausible_ts(ts) or (acc and PLACEHOLDER_ACCOUNT.fullmatch(acc))
+                or (fol and PLACEHOLDER_FOLDER.search(fol))}
+
+    def drop_unused_labels(self) -> None:
+        """Remove folders, calendars and accounts that nothing refers to any more."""
+        self.conn.execute("DELETE FROM folders WHERE id NOT IN "
+                          "(SELECT folder_id FROM messages WHERE folder_id IS NOT NULL)")
+        self.conn.execute("DELETE FROM calendars WHERE id NOT IN "
+                          "(SELECT calendar_id FROM events WHERE calendar_id IS NOT NULL)")
+        self.conn.execute(
+            """DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM messages WHERE account_id IS NOT NULL)
+               AND id NOT IN (SELECT account_id FROM folders WHERE account_id IS NOT NULL)
+               AND id NOT IN (SELECT account_id FROM calendars WHERE account_id IS NOT NULL)""")
 
     def _replace_attachments(self, pk: int, rec: MessageRecord) -> None:
         self.conn.execute("DELETE FROM attachments WHERE message_pk = ? AND source = ?", (pk, rec.source))
@@ -491,12 +559,37 @@ class Archive:
         return {
             "messages": q("SELECT COUNT(*) FROM messages"),
             "folders": q("SELECT COUNT(*) FROM folders"),
-            "accounts": q("SELECT COUNT(*) FROM accounts"),
+            "accounts": len(self.visible_accounts()),
             "attachments": q("SELECT COUNT(*) FROM attachments"),
             "orphan_files": orphans,
             "events": q("SELECT COUNT(*) FROM events"),
             "event_instances": q("SELECT COUNT(*) FROM event_instances"),
         }
+
+    def visible_accounts(self) -> list[str]:
+        """Account names to show: everything except internal accounts that own no messages."""
+        rows = self.conn.execute(
+            "SELECT a.name, EXISTS(SELECT 1 FROM messages m WHERE m.account_id = a.id) FROM accounts a ORDER BY a.name"
+        ).fetchall()
+        return [name for name, has_mail in rows if has_mail or not INTERNAL_ACCOUNT.search(name)]
+
+    def account_overview(self) -> list[dict]:
+        """Messages and newest message date per account and source (hidden accounts left out)."""
+        visible = set(self.visible_accounts())
+        rows = self.conn.execute(
+            """SELECT COALESCE(a.name, '(no account)') AS account, s.source, COUNT(DISTINCT m.id) AS messages,
+                      MAX(m.date_utc) AS newest, MIN(m.date_utc) AS oldest
+               FROM message_sources s JOIN messages m ON m.id = s.message_pk
+               LEFT JOIN accounts a ON a.id = m.account_id
+               GROUP BY account, s.source ORDER BY account, s.source"""
+        ).fetchall()
+        return [dict(r) for r in rows if r["account"] in visible or r["account"] == "(no account)"]
+
+    def display_account(self, name: str | None) -> str | None:
+        """None for internal accounts without mail, so tools do not show them."""
+        if name and INTERNAL_ACCOUNT.search(name) and name not in self.visible_accounts():
+            return None
+        return name
 
     def coverage(self) -> list[dict]:
         rows = self.conn.execute(

@@ -1,4 +1,4 @@
-"""Command line: new-outlook sync | snapshot | backup-legacy | status | launchd | serve."""
+"""Command line: new-outlook sync | snapshot | backup-legacy | status | privacy | purge-excluded | launchd | serve."""
 
 from __future__ import annotations
 
@@ -53,8 +53,11 @@ def cmd_sync(args) -> int:
     rc = 0
     for r in results:
         events = f" events={r.events_seen} new_events={r.events_inserted}" if r.events_seen or r.events_removed else ""
+        excluded = f" excluded={r.excluded}" if r.excluded else ""
+        if r.events_excluded:
+            excluded += f" events_excluded={r.events_excluded}"
         print(f"{stamp} [{r.source}] {r.status}: seen={r.seen} new={r.inserted} merged={r.merged} "
-              f"skipped={r.skipped} errors={r.errors}{events}" + (f" | {r.message}" if r.message else ""))
+              f"skipped={r.skipped} errors={r.errors}{events}{excluded}" + (f" | {r.message}" if r.message else ""))
         if r.details:
             d = r.details
             if "blocks_found" in d:
@@ -130,9 +133,75 @@ def cmd_status(args) -> int:
     print("counts:  " + ", ".join(f"{k}={v}" for k, v in st["counts"].items()))
     for c in st["coverage_by_source"]:
         print(f"  {c['source']:8} {c['n']:>7} messages  {c['first']} .. {c['last']}")
+    if st["privacy"]["active"]:
+        pv = st["privacy"]
+        print(f"privacy: {sum(pv['rules'].values())} rules, {pv['hidden_messages']} messages and "
+              f"{pv['hidden_events']} events hidden")
     for r in st["last_sync_by_source"]:
         print(f"  last {r['source']} sync: {r['status']} at {r['finished_at'] or r['started_at']}"
               f" (new={r['inserted']}, seen={r['seen']})" + (f" {r['message']}" if r["message"] else ""))
+    return 0
+
+
+PRIVACY_OPTIONS = {
+    "account": ("accounts", "account address"),
+    "folder": ("folders", "folder name or path (case-insensitive; also deleteditems, junk, ...)"),
+    "sender": ("senders", "exact sender address"),
+    "domain": ("domains", "sender domain (subdomains match too)"),
+    "subject_keyword": ("subject_keywords", "subject keyword (case-insensitive substring)"),
+    "attachment_name": ("attachment_names", "attachment file name pattern, e.g. '*grades*.xlsx'"),
+    "recipient": ("recipients", "recipient address"),
+}
+
+
+def cmd_privacy(args) -> int:
+    from . import privacy
+
+    try:
+        rules = privacy.load_rules()
+    except privacy.PrivacyConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
+    if args.action != "show":
+        changes = {kind: getattr(args, opt) for opt, (kind, _) in PRIVACY_OPTIONS.items() if getattr(args, opt)}
+        if not changes:
+            print(f"nothing to {args.action}: give at least one option, e.g. --folder Grades", file=sys.stderr)
+            return 2
+        n = sum((rules.add if args.action == "add" else rules.remove)(kind, vals) for kind, vals in changes.items())
+        path = privacy.save_rules(rules)
+        print(f"{'added' if args.action == 'add' else 'removed'} {n} rule(s) in {path} (mode 600)")
+    print(f"privacy scopes: {'active' if rules.active else 'no rules'}")
+    for kind, values in rules.as_dict().items():
+        print(f"  {kind} ({len(values)}): " + ", ".join(values))
+    if rules.active and Path(args.db).exists():
+        with Archive(args.db, readonly=True) as archive:
+            hidden = privacy.count_hidden(archive.conn, rules)
+        print(f"hidden in the archive: {hidden['messages']} messages, {hidden['events']} events")
+        if hidden["messages"] or hidden["events"]:
+            print("They are no longer returned by any tool. Run `new-outlook purge-excluded` to delete them.")
+    return 0
+
+
+def cmd_purge_excluded(args) -> int:
+    from . import privacy
+
+    if not Path(args.db).exists():
+        print(f"no archive yet at {args.db}.")
+        return 1
+    try:
+        rules = privacy.load_rules()
+    except privacy.PrivacyConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 2
+    if not rules.active:
+        print("no privacy rules configured: nothing to purge")
+        return 0
+    with Archive(args.db) as archive:
+        out = privacy.purge(archive, rules, dry_run=args.dry_run)
+    verb = "would delete" if args.dry_run else "deleted"
+    print(f"{verb}: " + ", ".join(f"{k}={v}" for k, v in out.items()))
+    if not args.dry_run:
+        print("database compacted")
     return 0
 
 
@@ -294,6 +363,16 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status", help="show archive coverage and last syncs")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_status)
+
+    s = sub.add_parser("privacy", help="show or edit privacy scopes: mail and events that are never stored or returned")
+    s.add_argument("action", choices=["show", "add", "remove"])
+    for opt, (_, helptext) in PRIVACY_OPTIONS.items():
+        s.add_argument("--" + opt.replace("_", "-"), dest=opt, action="append", metavar="VALUE", help=helptext)
+    s.set_defaults(func=cmd_privacy)
+
+    s = sub.add_parser("purge-excluded", help="delete already archived mail and events that match the privacy rules")
+    s.add_argument("--dry-run", action="store_true", help="only print how many would be deleted")
+    s.set_defaults(func=cmd_purge_excluded)
 
     s = sub.add_parser("launchd", help="manage the periodic sync LaunchAgent")
     s.add_argument("action", choices=["print", "install", "uninstall"])

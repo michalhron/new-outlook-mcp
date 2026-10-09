@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
 from . import attachments as att_mod
+from . import privacy
 from .db import Archive, normalize_subject
 from .model import normalize_message_id
 
@@ -99,13 +100,16 @@ LEFT JOIN accounts a ON a.id = m.account_id
 
 
 def _resolve_id(archive: Archive, email_id: str | int) -> sqlite3.Row:
+    """Find a message by archive id or Message-ID. Messages hidden by a privacy rule count as not found."""
     conn = archive.conn
     row = None
     s = str(email_id).strip()
+    vis, vparams = privacy.message_visible(conn)
     if s.isdigit():
-        row = conn.execute(_BASE_SELECT + " WHERE m.id = ?", (int(s),)).fetchone()
+        row = conn.execute(_BASE_SELECT + f" WHERE m.id = ? AND {vis}", (int(s), *vparams)).fetchone()
     if row is None and s:
-        row = conn.execute(_BASE_SELECT + " WHERE m.message_id = ?", (normalize_message_id(s),)).fetchone()
+        row = conn.execute(_BASE_SELECT + f" WHERE m.message_id = ? AND {vis}",
+                           (normalize_message_id(s), *vparams)).fetchone()
     if row is None:
         raise ToolInputError(f"no email with id {email_id!r}")
     return row
@@ -159,6 +163,9 @@ def search_emails(
     if has_attachment is not None:
         where.append("m.has_attachment = ?")
         params.append(int(bool(has_attachment)))
+    vis, vparams = privacy.message_visible(archive.conn)
+    where.append(vis)
+    params += vparams
 
     if sort not in ("relevance", "date_desc", "date_asc"):
         raise ToolInputError("sort must be 'relevance', 'date_desc' or 'date_asc'")
@@ -301,8 +308,10 @@ def get_thread(
         method = "subject"
 
     marks = ",".join("?" * len(ids))
+    vis, vparams = privacy.message_visible(conn)
     rows = conn.execute(
-        _BASE_SELECT + f" WHERE m.id IN ({marks}) ORDER BY m.date_ts IS NULL, m.date_ts ASC", list(ids)
+        _BASE_SELECT + f" WHERE m.id IN ({marks}) AND {vis} ORDER BY m.date_ts IS NULL, m.date_ts ASC",
+        [*ids, *vparams]
     ).fetchall()
     total = len(rows)
     rows = rows[-max(1, int(max_messages)):]
@@ -339,27 +348,40 @@ def list_recent(
 
 
 def list_folders(archive: Archive) -> dict:
-    rows = archive.conn.execute(
-        """SELECT f.name AS folder, a.name AS account, COUNT(m.id) AS messages,
+    conn = archive.conn
+    vis, vparams = privacy.message_visible(conn)
+    hidden = privacy.hidden_folder_ids(conn)
+    rows = conn.execute(
+        f"""SELECT f.id, f.name AS folder, a.name AS account, COUNT(m.id) AS messages,
                   MIN(m.date_utc) AS oldest, MAX(m.date_utc) AS newest
            FROM folders f LEFT JOIN accounts a ON a.id = f.account_id
-           LEFT JOIN messages m ON m.folder_id = f.id
-           GROUP BY f.id ORDER BY a.name, f.name"""
+           LEFT JOIN messages m ON m.folder_id = f.id AND {vis}
+           GROUP BY f.id ORDER BY a.name, f.name""", vparams
     ).fetchall()
-    unfiled = archive.conn.execute("SELECT COUNT(*) FROM messages WHERE folder_id IS NULL").fetchone()[0]
-    out = {"folders": [dict(r) for r in rows]}
+    unfiled = conn.execute(f"SELECT COUNT(*) FROM messages m WHERE m.folder_id IS NULL AND {vis}",
+                           vparams).fetchone()[0]
+    out = {"folders": [{k: r[k] for k in r.keys() if k != "id"} for r in rows if r["id"] not in hidden]}
     if unfiled:
         out["messages_without_folder"] = unfiled
     return out
 
 
 def archive_status(archive: Archive) -> dict:
+    """Archive size and coverage, counted without the messages and events that privacy rules hide."""
+    conn = archive.conn
+    rules = privacy.load_rules()
+    mf, ef = privacy.message_visible(conn, "m", rules), privacy.event_visible(conn, "e", rules)
+    counts = archive.counts(message_filter=mf, event_filter=ef)
+    counts["folders"] -= len(privacy.hidden_folder_ids(conn, rules))
+    if rules.accounts:
+        counts["accounts"] -= len(privacy.hidden_account_ids(conn, rules))
     return {
         "database": str(archive.path),
-        "counts": archive.counts(),
-        "coverage_by_source": archive.coverage(),
-        "calendar_coverage_by_source": archive.calendar_coverage(),
+        "counts": counts,
+        "coverage_by_source": archive.coverage(mf),
+        "calendar_coverage_by_source": archive.calendar_coverage(ef),
         "last_sync_by_source": archive.last_runs(),
+        "privacy": privacy.status(conn, rules),
     }
 
 
@@ -431,6 +453,10 @@ def get_attachment(
         raise ToolInputError("mode must be 'path', 'open' or 'text'")
     try:
         att = att_mod.get_row(archive, attachment_id)
+        vis, vparams = privacy.message_visible(archive.conn)
+        if not archive.conn.execute(f"SELECT 1 FROM messages m WHERE m.id = ? AND {vis}",
+                                    (att.message_pk, *vparams)).fetchone():
+            raise att_mod.AttachmentError(f"no attachment with id {attachment_id!r}")
         out = _attachment_summary(archive, att)
         if not out["available_locally"]:
             raise ToolInputError(att_mod.NOT_CACHED)

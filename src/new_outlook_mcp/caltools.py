@@ -12,6 +12,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .calendar_store import local_tz, resolve_tz
+from . import privacy
 from .db import Archive, normalize_subject
 from .ics import build_event_ics
 from .tools import ToolInputError, _fts_fallback, _open_url
@@ -115,6 +116,9 @@ def _instances(archive: Archive, lo: datetime, hi: datetime, *, calendar: str | 
         params.append(f"%{account}%")
     if not include_cancelled:
         where.append("e.is_cancelled = 0")
+    vis, vparams = privacy.event_visible(archive.conn)
+    where.append(vis)
+    params += vparams
     rows = archive.conn.execute(_INSTANCE_SELECT + " WHERE " + " AND ".join(where) + " ORDER BY i.start_ts",
                                 params).fetchall()
     tz = lo.tzinfo
@@ -182,9 +186,10 @@ def get_calendar_event(archive: Archive, event_id: int | str, *, timezone_name: 
         pk = int(str(event_id).split("@")[0])
     except ValueError as exc:
         raise ToolInputError(f"invalid event id {event_id!r}") from exc
+    vis, vparams = privacy.event_visible(archive.conn)
     r = archive.conn.execute(
         "SELECT e.*, c.name AS calendar, a.name AS account FROM events e LEFT JOIN calendars c ON c.id = e.calendar_id"
-        " LEFT JOIN accounts a ON a.id = c.account_id WHERE e.id = ?", (pk,)).fetchone()
+        f" LEFT JOIN accounts a ON a.id = c.account_id WHERE e.id = ? AND {vis}", (pk, *vparams)).fetchone()
     if r is None:
         raise ToolInputError(f"no calendar event with id {event_id!r}")
     all_day = bool(r["all_day"])
@@ -246,6 +251,9 @@ def search_calendar(archive: Archive, query: str, *, date_from: str | None = Non
     if date_to:
         where.append("e.id IN (SELECT event_pk FROM event_instances WHERE start_ts < ?)")
         params.append(int(_parse_local(date_to, tz, end=True).timestamp()))
+    vis, vparams = privacy.event_visible(archive.conn)
+    where.append(vis)
+    params += vparams
     sql = ("WITH hits AS MATERIALIZED (SELECT rowid AS pk, bm25(events_fts, 4.0, 2.0, 2.0, 1.0) AS score"
            " FROM events_fts WHERE events_fts MATCH ?)"
            " SELECT e.*, c.name AS calendar, a.name AS account FROM hits JOIN events e ON e.id = hits.pk"
@@ -422,11 +430,12 @@ def meeting_prep(archive: Archive, event_id: int | str, *, days_back: int = 90, 
         params.append(f"%{subj}%")
     threads: list[dict] = []
     if clauses:
+        vis, vparams = privacy.message_visible(archive.conn)
         rows = archive.conn.execute(
             "SELECT m.id, m.subject, m.from_name, m.from_addr, m.date_utc, m.date_ts, m.body_text,"
             " COALESCE(m.thread_root, m.norm_subject, CAST(m.id AS TEXT)) AS tkey FROM messages m"
-            f" WHERE m.date_ts >= ? AND ({' OR '.join(clauses)}) ORDER BY m.date_ts DESC LIMIT 500",
-            [since, *params]).fetchall()
+            f" WHERE m.date_ts >= ? AND ({' OR '.join(clauses)}) AND {vis} ORDER BY m.date_ts DESC LIMIT 500",
+            [since, *params, *vparams]).fetchall()
         seen: dict[str, dict] = {}
         for r in rows:
             t = seen.get(r["tkey"])

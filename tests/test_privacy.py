@@ -509,3 +509,15 @@ def test_status_without_rules_reports_inactive(loaded):
     pv = tools.archive_status(loaded)["privacy"]
     assert pv == {"active": False, "rules": dict.fromkeys(privacy.RULE_TYPES, 0),
                   "hidden_messages": 0, "hidden_events": 0}
+
+
+def test_excluded_account_hidden_from_account_overview(loaded):
+    from new_outlook_mcp import tools as t
+
+    assert [a["account"] for a in t.archive_status(loaded)["accounts"]] == ["me@uni.example.edu"]
+    privacy.save_rules(privacy.Rules(accounts=["me@uni.example.edu"]))
+    try:
+        st = t.archive_status(loaded)
+        assert st["accounts"] == [] and st["counts"]["accounts"] == 0
+    finally:
+        privacy.save_rules(privacy.Rules())

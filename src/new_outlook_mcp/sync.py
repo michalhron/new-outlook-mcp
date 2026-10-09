@@ -67,7 +67,11 @@ def run_import(
         # A bad [exclude] table raises here, so nothing is imported when the rules cannot be read.
         rules = privacy.load_rules() if rules is None else rules
         snap = importer.snapshot(snap_dir)
-        skip = set() if (full or not importer.incremental) else archive.known_source_keys(name)
+        if full or not importer.incremental:
+            skip = set()
+        else:
+            # Re-read records whose stored message still has placeholder labels or a bad date.
+            skip = archive.known_source_keys(name) - archive.keys_needing_repair(name)
         for rec in importer.iter_records(snap, skip_keys=skip):
             if privacy.excludes_message(rec, rules):
                 res.excluded += 1
@@ -111,6 +115,7 @@ def run_import(
                 res.events_inserted += 1
         with archive.transaction():
             res.events_removed = importer.finish_events(archive, seen_events)
+            archive.drop_unused_labels()
             if res.events_seen or res.events_removed:
                 res.instances = rebuild_instances(archive)
 

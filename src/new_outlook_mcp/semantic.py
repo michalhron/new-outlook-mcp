@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from . import attachments as att_mod
 from . import tools
-from .chunking import chunk_body, chunk_plain
+from .chunking import chunk_body, chunk_plain, kept_lines, line_key
 from .db import Archive, _now
 from .embedder import (MISSING_EXTRA, NOT_EMBEDDED, Embedder, SemanticUnavailable, get_embedder,
                        semantic_installed)
@@ -38,6 +38,13 @@ ATTACHMENT_TEXT_CAP = 60_000  # characters read from one attachment
 ATTACHMENT_CHUNK_CAP = 60
 SNIPPET_CHARS = 300
 SYNC_EMBED_MAX_MESSAGES = 2000
+#: A body line seen in at least this many messages is a footer or banner, not content, and is not embedded.
+BOILERPLATE_MIN_MESSAGES = 10
+#: Lines shorter than this are never counted as boilerplate on their own ("Hi all", "Thanks").
+BOILERPLATE_MIN_CHARS = 12
+#: Version of the rules that turn mail into chunks. Embeddings made with an older version still work,
+#: but `new-outlook embed --reembed` rebuilds them with the current rules (v2: boilerplate lines dropped).
+CHUNKING_VERSION = 2
 
 
 class ModelMismatch(SemanticUnavailable):
@@ -70,8 +77,9 @@ def status(archive: Archive) -> dict:
     c = archive.conn
     total = c.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
     done = c.execute("SELECT COUNT(*) FROM embedded_messages").fetchone()[0]
+    chunking = int(_meta_get(archive, "embed_chunking") or 1) if st else CHUNKING_VERSION
     return {**st, "messages": total, "messages_embedded": done, "chunks": c.execute("SELECT COUNT(*) FROM chunks").fetchone()[0],
-            "installed": semantic_installed()}
+            "installed": semantic_installed(), "chunking": chunking, "chunking_outdated": chunking < CHUNKING_VERSION}
 
 
 def _check_model(state: dict, embedder: Embedder) -> None:
@@ -92,6 +100,7 @@ def init_index(archive: Archive, embedder: Embedder) -> VectorStore:
             _meta_set(archive, "embed_model", embedder.name)
             _meta_set(archive, "embed_dim", str(embedder.dim))
             _meta_set(archive, "embed_backend", backend)
+            _meta_set(archive, "embed_chunking", str(CHUNKING_VERSION))
         state = index_state(archive)
     _check_model(state, embedder)
     store = VectorStore(archive, state["dim"], state["backend"])
@@ -107,7 +116,8 @@ def reset_index(archive: Archive) -> None:
             VectorStore(archive, state["dim"], state["backend"]).drop()
         archive.conn.execute("DELETE FROM chunks")
         archive.conn.execute("DELETE FROM embedded_messages")
-        archive.conn.execute("DELETE FROM meta WHERE key IN ('embed_model', 'embed_dim', 'embed_backend')")
+        archive.conn.execute(
+            "DELETE FROM meta WHERE key IN ('embed_model', 'embed_dim', 'embed_backend', 'embed_chunking')")
 
 
 def _open_for_query(archive: Archive) -> tuple[Embedder, VectorStore]:
@@ -137,8 +147,22 @@ class ChunkSpec:
         self.embed_text = self.embed_text or self.text
 
 
-def build_chunks(archive: Archive, pk: int) -> list[ChunkSpec]:
-    """Subject, body and local attachment text of one message as chunks."""
+def boilerplate_lines(archive: Archive, min_messages: int = BOILERPLATE_MIN_MESSAGES) -> frozenset[str]:
+    """Body lines (as `line_key`) that occur in at least `min_messages` messages: footers, disclaimers, banners.
+
+    Counted over the text that remains after quote and signature stripping, so a line
+    quoted in a long thread does not count, but a footer under every newsletter does.
+    """
+    counts: dict[str, int] = {}
+    for (body,) in archive.conn.execute("SELECT body_text FROM messages WHERE body_text IS NOT NULL"):
+        for key in {line_key(line) for line in kept_lines(body)}:
+            if len(key) >= BOILERPLATE_MIN_CHARS:
+                counts[key] = counts.get(key, 0) + 1
+    return frozenset(k for k, n in counts.items() if n >= min_messages)
+
+
+def build_chunks(archive: Archive, pk: int, boilerplate: frozenset[str] = frozenset()) -> list[ChunkSpec]:
+    """Subject, body and local attachment text of one message as chunks. Body lines in `boilerplate` are left out."""
     row = archive.conn.execute("SELECT subject, body_text FROM messages WHERE id = ?", (pk,)).fetchone()
     if row is None:
         return []
@@ -146,7 +170,7 @@ def build_chunks(archive: Archive, pk: int) -> list[ChunkSpec]:
     subject = (row["subject"] or "").strip()
     if subject:
         specs.append(ChunkSpec("subject", 0, subject, 0, len(subject)))
-    for i, c in enumerate(chunk_body(row["body_text"])):
+    for i, c in enumerate(chunk_body(row["body_text"], boilerplate)):
         specs.append(ChunkSpec("body", i, c.text, c.start, c.end))
     for att in tools._attachment_rows(archive, pk):
         if att.is_inline and att.is_small_inline_image:
@@ -168,12 +192,13 @@ def build_chunks(archive: Archive, pk: int) -> list[ChunkSpec]:
 
 # ------------------------------------------------------------------- indexing
 
-def _embed_group(archive: Archive, embedder: Embedder, store: VectorStore, pks: list[int], batch: int) -> int:
+def _embed_group(archive: Archive, embedder: Embedder, store: VectorStore, pks: list[int], batch: int,
+                 boilerplate: frozenset[str] = frozenset()) -> int:
     """Chunk, embed and store a group of messages in one transaction. Returns the chunk count."""
     specs: list[tuple[int, ChunkSpec]] = []
     for pk in pks:
         try:
-            specs.extend((pk, s) for s in build_chunks(archive, pk))
+            specs.extend((pk, s) for s in build_chunks(archive, pk, boilerplate))
         except Exception as exc:  # a bad message must not block the backfill
             log.warning("could not chunk message %s: %s", pk, exc)
     matrix = embedder.embed_passages([s.embed_text for _, s in specs], batch)
@@ -246,12 +271,13 @@ def backfill(
     total = min(res.pending_at_start, limit) if limit else res.pending_at_start
     started = time.monotonic()
     batch = max(1, int(batch))
+    boilerplate = boilerplate_lines(archive) if total else frozenset()
     try:
         while res.messages < total:
             pks = _next_pending(archive, min(batch, total - res.messages))
             if not pks:
                 break
-            res.chunks += _embed_group(archive, embedder, store, pks, batch)
+            res.chunks += _embed_group(archive, embedder, store, pks, batch, boilerplate)
             res.messages += len(pks)
             elapsed = max(time.monotonic() - started, 1e-9)
             rate = res.messages / elapsed
@@ -349,12 +375,34 @@ def _vector_hits(archive: Archive, store: VectorStore, qvec, where: list[str], p
 _FTS_SYNTAX = re.compile(r'["()*:^]|\b(AND|OR|NOT|NEAR)\b')
 
 
+#: Function words left out of the keyword half of hybrid search, which ORs the words of a question:
+#: "the invoice from my physiotherapist" must not match every message containing "the" or "from".
+#: English, Dutch, Czech, German, French and Danish, the languages the mail stripping rules know.
+STOPWORDS = frozenset("""
+the and for from with that this was were are has have had not but you your our their them they
+about into over after before when what which who whom whose where why how all any can could would should
+will just than then there these those its also been being does did doing more most other some such only
+own same very out off per via
+het een van voor met dat die deze niet maar ook als bij naar aan wat wie waar hoe zijn hebben heeft
+was werd wordt worden mijn jouw onze hun uit over door tot nog wel geen dan
+jak jsem jsme jste nebo ale pro jako tak ten tato toto které který která není byl byla bylo
+der die das und mit von für nicht ein eine ist sind war wie auch auf aus bei nach über
+les des une est pas que qui pour dans par sur avec sont aux
+det den der og til fra med som har var ikke men
+""".split())  # noqa: SIM905 - a word list reads better as text
+
+
 def _fts_query(query: str) -> str:
-    """Plain questions become an OR of their words so one missing word does not empty the result."""
+    """Plain questions become an OR of their words so one missing word does not empty the result.
+
+    Function words are dropped unless the question has nothing else.
+    """
     if _FTS_SYNTAX.search(query):
         return query
-    words = list(dict.fromkeys(w.lower() for w in re.findall(r"\w+", query, flags=re.UNICODE) if len(w) > 2))[:16]
-    return " OR ".join('"' + w + '"' for w in words) if words else query
+    words = list(dict.fromkeys(w.lower() for w in re.findall(r"\w+", query, flags=re.UNICODE) if len(w) > 2))
+    content = [w for w in words if w not in STOPWORDS] or words
+    content = content[:16]
+    return " OR ".join('"' + w + '"' for w in content) if content else query
 
 
 def _keyword_hits(archive: Archive, query: str, where: list[str], params: list, pool: int) -> list[dict]:

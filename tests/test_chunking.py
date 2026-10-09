@@ -122,3 +122,30 @@ def test_outlook_reply_headers_nordic_and_dutch(headers, marker):
     text = f"Short answer here.\n\n{headers}\n\nOld quoted body that should go."
     out = chunking.strip_quotes_and_signature(text)
     assert "Short answer here." in out and marker not in out and "Old quoted body" not in out
+
+
+# ------------------------------------------------------------- boilerplate
+
+FOOTER = "Please book an appointment with me here."
+
+
+def test_line_key_ignores_case_spacing_and_padding():
+    assert chunking.line_key("  Please  BOOK an appointment with me here. ") == chunking.line_key(FOOTER)
+    assert chunking.line_key("\ufeff\u034fNew posts from UGent\u200b") == "new posts from ugent"
+
+
+def test_boilerplate_lines_are_dropped_from_body():
+    body = f"The sharing station template is due Friday.\n\n{FOOTER}\nStay in the know. Subscribe to our newsletter."
+    boiler = {chunking.line_key(FOOTER), chunking.line_key("Stay in the know. Subscribe to our newsletter.")}
+    chunks = chunk_body(body, boiler)
+    assert [c.text for c in chunks] == ["The sharing station template is due Friday."]
+
+
+def test_message_that_is_all_boilerplate_keeps_its_text():
+    assert [c.text for c in chunk_body(FOOTER, {chunking.line_key(FOOTER)})] == [FOOTER]
+
+
+def test_punctuation_only_chunks_are_dropped():
+    assert chunk_body("," * 400) == []
+    assert chunk_plain("Real words here.\n\n" + ";" * 300)[0].text == "Real words here."
+    assert chunking.mostly_symbols(",,,, ,,,") and not chunking.mostly_symbols("Invoice 24Q290, € 160.00")

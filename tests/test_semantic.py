@@ -421,3 +421,28 @@ def test_purge_removes_chunks_and_vectors(archive, corpus, backend):
     assert archive.conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {col} IN ({marks})", ids).fetchone()[0] == 0
     other = semantic.semantic_search(archive, "quarterly budget", mode="semantic")
     assert corpus["budget"] in {r["id"] for r in other["results"]}
+
+
+def test_boilerplate_lines_need_many_messages(archive):
+    footer = "Please book an appointment with me here."
+    for i in range(semantic.BOILERPLATE_MIN_MESSAGES):
+        _add(archive, f"news{i}", f"Update {i}", f"News item number {i} is here.\n\n{footer}", day=1 + i % 20)
+    _add(archive, "rare", "Rare", "This sentence appears in one message only.")
+    boiler = semantic.boilerplate_lines(archive)
+    assert "please book an appointment with me here" in boiler
+    assert "this sentence appears in one message only" not in boiler
+    pk = archive.conn.execute("SELECT id FROM messages WHERE dedup_key LIKE '%news0%'").fetchone()[0]
+    bodies = [c.text for c in semantic.build_chunks(archive, pk, boiler) if c.kind == "body"]
+    assert bodies == ["News item number 0 is here."]
+
+
+def test_hybrid_keyword_query_drops_function_words():
+    assert semantic._fts_query("the invoice from my physiotherapist") == '"invoice" OR "physiotherapist"'
+    assert semantic._fts_query("factuur van de kinesist") == '"factuur" OR "kinesist"'
+    assert semantic._fts_query("the from") == '"the" OR "from"'  # nothing else left: keep them
+
+
+def test_status_flags_embeddings_from_older_chunking_rules(archive, corpus):
+    assert semantic.status(archive)["chunking_outdated"] is False
+    archive.conn.execute("UPDATE meta SET value = '1' WHERE key = 'embed_chunking'")
+    assert semantic.status(archive)["chunking_outdated"] is True

@@ -458,6 +458,9 @@ def cmd_embed(args) -> int:
             st = semantic.status(archive)
             print(f"model: {st.get('model', '(none yet)')}  dim: {st.get('dim', '-')}  store: {st.get('backend', '-')}")
             print(f"messages embedded: {st['messages_embedded']} of {st['messages']}  chunks: {st['chunks']}")
+            if st["chunking_outdated"]:
+                print("embedded with older chunking rules (footers and banners included). "
+                      "Run `new-outlook embed --reembed` for better search by meaning.")
             return 0
         model = args.model or (state or {}).get("model") or emb.DEFAULT_MODEL
         if args.reembed:

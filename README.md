@@ -32,6 +32,36 @@ This installs two commands: `new-outlook` (CLI) and `new-outlook-mcp` (the MCP s
 
 Outlook's files live in `~/Library/Group Containers/UBF8T346G9.Office/`. Recent macOS versions ask before one app reads another app's container. The first `sync` from Terminal may show a prompt. For the scheduled job, give the Python binary that pipx uses (shown by `pipx environment` or `head -1 $(which new-outlook)`) Full Disk Access in System Settings › Privacy & Security, or the job fails with "Operation not permitted".
 
+## Validate on your Mac in 15 minutes
+
+No Claude session is needed for these steps. Each one writes a report that holds counts and structure only, never subjects, names, addresses or message text. Paste the reports into a Claude session afterwards.
+
+1. Install (once), or upgrade after new changes:
+
+   ```sh
+   pipx install --force git+https://github.com/michalhron/new-outlook-mcp.git
+   ```
+
+2. Run the full check (about 5 to 10 minutes; the first run also copies the legacy archive, about 3.3 GB):
+
+   ```sh
+   new-outlook validate --expect-legacy 9150
+   ```
+
+   It backs up the legacy `Data` folder to `~/new-outlook-legacy-backup` (only if no backup exists), imports the legacy archive and New Outlook's cache into a fresh test archive, and writes `new-outlook-validate-<date>.txt` in the current folder. The report lists every check as PASS, WARN or FAIL with what to do. Accounts appear as "account A" and custom folders as "folder #n". The key to those labels is in `validate-key.txt` inside the test folder; keep it to yourself.
+
+3. Run one experiment pair (Outlook stays open throughout):
+
+   ```sh
+   new-outlook experiment start pair1          # copies the cache and prints what to do in Outlook
+   # ... do the steps it prints: probe mails with "HXPROBE" in the subject, a PDF, recurring events ...
+   new-outlook experiment finish pair1         # copies again and writes the diff report
+   ```
+
+   Everything goes to `~/new-outlook-experiments/pair1/` (it refuses to write inside a git repository). The report is `report.txt` there. It prints strings only when they contain `HXPROBE`. `new-outlook experiment list` shows the other experiments (`new-mail`, `cc-bcc-pdf`, `recurrence`, `read-flags`, `inline-image`, `responses`); pick one with `--kind`.
+
+4. Paste `new-outlook-validate-<date>.txt` and `~/new-outlook-experiments/pair1/report.txt` into a Claude session.
+
 ## First run: back up the legacy archive
 
 The legacy archive is frozen and will not come back if Outlook deletes it. Make one safe copy first, then import from that copy.

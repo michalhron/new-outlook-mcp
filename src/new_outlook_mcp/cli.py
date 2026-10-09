@@ -136,6 +136,9 @@ def cmd_status(args) -> int:
     if not Path(args.db).exists():
         print(f"no archive yet at {args.db}. Run `new-outlook sync` first.")
         return 1
+    with Archive(args.db) as archive:  # read-write once, so an old archive is upgraded
+        for change in archive.migrated:
+            print(f"upgraded archive: {change}", file=sys.stderr)
     with Archive(args.db, readonly=True) as archive:
         st = archive_status(archive)
     if args.json:

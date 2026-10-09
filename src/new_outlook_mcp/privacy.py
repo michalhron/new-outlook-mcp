@@ -503,6 +503,7 @@ def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict
         for a in _account_ids(conn, rules):
             if not any(conn.execute(f"SELECT 1 FROM {t} WHERE account_id = ? LIMIT 1", (a,)).fetchone()
                        for t in ("messages", "folders", "calendars")):
+                conn.execute("UPDATE message_sources SET account_id = NULL WHERE account_id = ?", (a,))
                 conn.execute("DELETE FROM accounts WHERE id = ?", (a,))
                 out["accounts"] += 1
     for i in att_ids:

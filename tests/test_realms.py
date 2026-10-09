@@ -246,3 +246,35 @@ def test_cli_realm(both, capsys):
     assert cli.main(["realm", "add", "home", "x@example.org"]) == 2
     assert cli.main(["realm", "remove", HEY]) == 0
     assert realms.realm_of(HEY) is None
+
+
+# ----------------------------------------------------------- merged mail
+
+@pytest.fixture
+def merged(both, tmp_path):
+    """A HEY copy of the work message alpha-1, merged into it."""
+    write_eml(tmp_path / "hey-archive", "103.eml", subject="copy", body="copy", mid="alpha-1@example.org")
+    res = sync(both, ["eml"], snapshot_base=tmp_path / "snaps")[0]
+    assert res.merged == 1
+    return both
+
+
+def test_merged_message_belongs_to_both_realms(merged):
+    pk = _pk(merged, "alpha-1@example.org")
+    assert realms.realms_of_message(merged.conn, pk) == ["work", "private"]
+    for realm in ("work", "private", "all"):
+        ids = {r["id"] for r in tools.search_emails(merged, realm=realm, limit=200)["results"]}
+        assert pk in ids, realm
+    hit = next(r for r in tools.search_emails(merged, realm="private", limit=200)["results"] if r["id"] == pk)
+    assert hit["realm"] == "work+private"
+
+
+def test_fence_shows_merged_message_on_both_sides(merged):
+    pk = _pk(merged, "alpha-1@example.org")
+    hey_only = _pk(merged, "flat-1@hey.example")
+    realms.set_fence("private")
+    ids = {r["id"] for r in tools.search_emails(merged, realm="all", limit=200)["results"]}
+    assert pk in ids and hey_only in ids
+    realms.set_fence("work")
+    ids = {r["id"] for r in tools.search_emails(merged, realm="all", limit=200)["results"]}
+    assert pk in ids and hey_only not in ids

@@ -226,7 +226,7 @@ def get_email(
         "SELECT filename, content_type, size FROM attachments WHERE message_pk = ? ORDER BY id", (row["id"],)
     ).fetchall()
     sources = archive.conn.execute(
-        "SELECT source FROM message_sources WHERE message_pk = ? ORDER BY source", (row["id"],)
+        "SELECT DISTINCT source FROM message_sources WHERE message_pk = ? ORDER BY source", (row["id"],)
     ).fetchall()
     out = {
         "id": row["id"],

@@ -106,6 +106,7 @@ The archive only sees what New Outlook has cached. To bring in an old message th
 - Search by meaning: [semantic-search.md](semantic-search.md).
 - A published calendar feed: [calendar.md](calendar.md#published-calendar-feed).
 - Privacy scopes for grades, hiring or HR mail: [privacy.md](privacy.md).
+- Private HEY mail next to work mail: [work-and-private.md](work-and-private.md).
 
 ## Configuration
 
@@ -121,6 +122,7 @@ Every location can be changed with an environment variable:
 | `NEW_OUTLOOK_LOG_DIR` | `~/Library/Logs/new-outlook-mcp` |
 | `NEW_OUTLOOK_EXPERIMENTS` | `~/new-outlook-experiments` |
 | `NEW_OUTLOOK_TZ` | This Mac's timezone, for calendar times |
+| `NEW_OUTLOOK_REALM` | No fence. `work` or `private` limits the server to one realm ([work-and-private.md](work-and-private.md)) |
 
 `NEW_OUTLOOK_HOME` holds the archive, `config.toml` (feeds, your addresses and privacy rules, mode 600), snapshots and cached attachment text. Back up this folder to keep everything.
 

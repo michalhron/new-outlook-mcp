@@ -6,7 +6,7 @@ Contents: [Mail](#mail) · [Attachments and files](#attachments-and-files) · [C
 
 ## Mail
 
-`search_emails(query?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, attachment_name?, sort?, limit?, offset?, mode?)`
+`search_emails(query?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, attachment_name?, sort?, limit?, offset?, mode?, realm?)`
 
 Search mail and filter it. Without `query` it lists the mail that matches the filters.
 
@@ -15,14 +15,15 @@ Search mail and filter it. Without `query` it lists the mail that matches the fi
 - `sort`: `relevance` (default), `date_desc` or `date_asc`.
 - `limit` 1 to 200 (default 20), `offset` for paging. The result has `next_offset` when there is more.
 - `mode`: `keyword` (default), `semantic` or `hybrid`. The last two need [search by meaning](semantic-search.md).
+- `realm`: `work`, `private` or `all`. Once accounts are assigned to realms, searches cover the default realm (work) unless a call asks for more. Results then carry `realm`, and the response says which realm it covered. See [work-and-private.md](work-and-private.md).
 
-`semantic_search(query, mode?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, limit?)`
+`semantic_search(query, mode?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, limit?, realm?)`
 
 Search by meaning, in your own words and in any of about 100 languages. `mode` is `hybrid` (default) or `semantic`. `limit` 1 to 100 (default 10). See [semantic-search.md](semantic-search.md).
 
-`find_similar(email_id?, attachment_id?, limit?)`
+`find_similar(email_id?, attachment_id?, limit?, realm?)`
 
-Mail that resembles one email or one attachment. Give exactly one of the two ids.
+Mail that resembles one email or one attachment. Give exactly one of the two ids. Results cover the default realm unless `realm` says otherwise.
 
 `get_email(email_id, offset?, max_chars?, include_headers?)`
 
@@ -32,9 +33,9 @@ One message: metadata, attachment list and the plain-text body. `email_id` is th
 
 The conversation around a message, oldest first, with `body_chars` (default 1,500) of each body. Threads come from conversation ids and reply headers. With `subject_fallback` (default on), messages with the same normalized subject join when those are missing.
 
-`list_recent(limit?, folder?, account?, days?)`
+`list_recent(limit?, folder?, account?, days?, realm?)`
 
-The newest messages, optionally within a folder, an account or the last N days.
+The newest messages, optionally within a folder, an account, a realm or the last N days.
 
 `list_folders()`
 

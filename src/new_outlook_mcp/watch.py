@@ -120,11 +120,28 @@ def subprocess_runner(db: Path | None = None, *, timeout: float = DEFAULT_TIMEOU
     return run
 
 
+def watch_sources() -> str:
+    """Sources each watcher sync imports: HxStore, plus .eml folders once one is configured."""
+    from .importers.eml import EmlConfigError, load_folders
+
+    try:
+        return SYNC_SOURCES + (",eml" if load_folders() else "")
+    except EmlConfigError:
+        return SYNC_SOURCES + ",eml"  # let the sync report the config error
+
+
 def watch_targets(hxstore: Path | None = None) -> list[Path]:
-    """HxStore.hxd, hxcore.hfl and the Files/ folder next to it."""
+    """HxStore.hxd, hxcore.hfl and the Files/ folder next to it, plus configured .eml folders."""
     store = hxstore or paths.hxstore_path()
     base = store.parent
-    return [store, base / "hxcore.hfl", base / "Files"]
+    targets = [store, base / "hxcore.hfl", base / "Files"]
+    from .importers.eml import EmlConfigError, load_folders
+
+    try:
+        targets += [f.path for f in load_folders()]
+    except EmlConfigError:
+        pass  # the sync reports the config error
+    return targets
 
 
 def fingerprint(path: Path) -> tuple | None:
@@ -362,7 +379,7 @@ def run_watch(db: Path, *, hxstore: Path | None = None, debounce: float = DEFAUL
               runner: Runner | None = None) -> int:
     """Entry point for `new-outlook watch`."""
     lower_own_priority()
-    w = Watcher(watch_targets(hxstore), runner or subprocess_runner(db, timeout=timeout), debounce=debounce,
+    w = Watcher(watch_targets(hxstore), runner or subprocess_runner(db, timeout=timeout, sources=watch_sources()), debounce=debounce,
                 min_interval=min_interval, poll=poll, sync_timeout=timeout)
     if once:
         # One pass: sync now, without waiting for a quiet period.

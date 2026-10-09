@@ -1,4 +1,4 @@
-"""Command line: outlook-archive sync | snapshot | backup-legacy | status | launchd | serve."""
+"""Command line: new-outlook sync | snapshot | backup-legacy | status | launchd | serve."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def cmd_sync(args) -> int:
         if r.needs_attention or (r.status == "unavailable" and explicit):
             rc = 1
             if args.notify:
-                notify("Outlook archive sync", f"{r.source}: {r.status}. {r.message}"[:240])
+                notify("New Outlook MCP sync", f"{r.source}: {r.status}. {r.message}"[:240])
     return rc
 
 
@@ -91,13 +91,13 @@ def cmd_backup_legacy(args) -> int:
         return 2
     n = sum(1 for _ in dest.rglob("*") if _.is_file())
     print(f"done: {n} files. Import from the copy with:\n"
-          f"  outlook-archive sync --source legacy --legacy-dir \"{dest}\"")
+          f"  new-outlook sync --source legacy --legacy-dir \"{dest}\"")
     return 0
 
 
 def cmd_status(args) -> int:
     if not Path(args.db).exists():
-        print(f"no archive yet at {args.db}. Run `outlook-archive sync` first.")
+        print(f"no archive yet at {args.db}. Run `new-outlook sync` first.")
         return 1
     with Archive(args.db, readonly=True) as archive:
         st = archive_status(archive)
@@ -140,7 +140,7 @@ def cmd_calendar(args) -> int:
         return 0
     if args.action == "add-feed":
         if not args.name:
-            print("usage: outlook-archive calendar add-feed NAME", file=sys.stderr)
+            print("usage: new-outlook calendar add-feed NAME", file=sys.stderr)
             return 2
         if any(f.name == args.name for f in current):
             print(f"a feed named {args.name!r} exists; remove it first", file=sys.stderr)
@@ -155,7 +155,7 @@ def cmd_calendar(args) -> int:
             print("that does not look like an ICS URL", file=sys.stderr)
             return 2
         p = feeds.save_feeds([*current, feeds.Feed(args.name, url)])
-        print(f"saved feed {args.name!r} to {p} (mode 600). Run: outlook-archive sync --source ics")
+        print(f"saved feed {args.name!r} to {p} (mode 600). Run: new-outlook sync --source ics")
         return 0
     if args.action == "remove-feed":
         keep = [f for f in current if f.name != args.name]
@@ -181,7 +181,7 @@ def cmd_serve(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="outlook-archive", description=__doc__)
+    p = argparse.ArgumentParser(prog="new-outlook", description=__doc__)
     p.add_argument("--db", type=Path, default=paths.db_path(), help="archive database (default: %(default)s)")
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)

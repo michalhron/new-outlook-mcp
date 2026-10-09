@@ -105,8 +105,8 @@ def resolve_tz(tzid: str | None) -> ZoneInfo | None:
 
 
 def local_tz() -> ZoneInfo:
-    """The user's zone: $OUTLOOK_ARCHIVE_TZ, else the system zone, else UTC."""
-    name = os.environ.get("OUTLOOK_ARCHIVE_TZ") or os.environ.get("TZ")
+    """The user's zone: $NEW_OUTLOOK_TZ, else the system zone, else UTC."""
+    name = os.environ.get("NEW_OUTLOOK_TZ") or os.environ.get("TZ")
     if name:
         z = resolve_tz(name)
         if z:

@@ -5,10 +5,10 @@ from pathlib import Path
 
 from synthetic import add_legacy_message
 
-from outlook_archive_mcp import tools
-from outlook_archive_mcp.importers import olk15
-from outlook_archive_mcp.importers.legacy import LegacyImporter, outlook_time
-from outlook_archive_mcp.sync import sync
+from new_outlook_mcp import tools
+from new_outlook_mcp.importers import olk15
+from new_outlook_mcp.importers.legacy import LegacyImporter, outlook_time
+from new_outlook_mcp.sync import sync
 
 
 def _by_subject(archive, subject):
@@ -104,7 +104,7 @@ def test_never_writes_to_outlook_files(archive, legacy_data, tmp_path):
 def test_snapshot_folds_wal_into_copy(legacy_data, tmp_path):
     import sqlite3
 
-    from outlook_archive_mcp.snapshot import open_sqlite_immutable
+    from new_outlook_mcp.snapshot import open_sqlite_immutable
 
     # A "running Outlook": WAL mode, uncheckpointed write, connection kept open.
     writer = sqlite3.connect(legacy_data / "Outlook.sqlite")

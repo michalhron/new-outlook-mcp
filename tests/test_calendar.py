@@ -9,9 +9,9 @@ from datetime import datetime, timezone
 import pytest
 from synthetic import FEED_ICS
 
-from outlook_archive_mcp import caltools, feeds
-from outlook_archive_mcp.importers.ics_feed import IcsFeedImporter
-from outlook_archive_mcp.sync import run_import
+from new_outlook_mcp import caltools, feeds
+from new_outlook_mcp.importers.ics_feed import IcsFeedImporter
+from new_outlook_mcp.sync import run_import
 
 PRAGUE = "Europe/Prague"
 
@@ -227,7 +227,7 @@ def test_feed_url_never_leaks(loaded, tmp_path, caplog):
 
 
 def test_feed_config_is_private(tmp_path, capsys, monkeypatch):
-    from outlook_archive_mcp import cli
+    from new_outlook_mcp import cli
 
     monkeypatch.setattr("sys.stdin", io.StringIO(SECRET_URL + "\n"))
     assert cli.main(["calendar", "add-feed", "work"]) == 0

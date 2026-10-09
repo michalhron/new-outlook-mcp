@@ -469,7 +469,7 @@ def create_event_draft(*, subject: str, start: str, end: str | None = None, time
                                body=body, attendees=attendees, all_day=all_day)
     except ValueError as exc:
         raise ToolInputError(str(exc)) from exc
-    d = out_dir or Path(tempfile.mkdtemp(prefix="outlook-archive-event-"))
+    d = out_dir or Path(tempfile.mkdtemp(prefix="new-outlook-event-"))
     name = re.sub(r"[^\w.-]+", "-", subject.strip())[:60].strip("-") or "event"
     path = d / f"{name}.ics"
     path.write_bytes(data)

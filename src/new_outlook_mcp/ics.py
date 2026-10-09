@@ -158,10 +158,10 @@ def build_event_ics(
 ) -> bytes:
     """A single VEVENT without METHOD, so Outlook opens it as a new event to save."""
     cal = Calendar()
-    cal.add("PRODID", "-//outlook-archive-mcp//draft//EN")
+    cal.add("PRODID", "-//new-outlook-mcp//draft//EN")
     cal.add("VERSION", "2.0")
     ev = Event()
-    ev.add("UID", f"{uuid.uuid4()}@outlook-archive-mcp.local")
+    ev.add("UID", f"{uuid.uuid4()}@new-outlook-mcp.local")
     ev.add("DTSTAMP", datetime.now(timezone.utc))
     ev.add("SUMMARY", subject)
     if all_day:

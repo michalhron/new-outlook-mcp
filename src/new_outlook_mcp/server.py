@@ -75,7 +75,7 @@ def build_server(db_path: Path | None = None) -> MCPServer:
 
     @server.tool(annotations=READ_ONLY)
     def semantic_search(
-        query: Annotated[str, Field(description="What you remember, in your own words. English or Czech. No exact keywords needed")],
+        query: Annotated[str, Field(description="What you remember, in your own words, in any of about 100 languages. No exact keywords needed")],
         mode: Annotated[Literal["hybrid", "semantic"], Field(
             description="hybrid: meaning plus keywords, fused (default). semantic: meaning only")] = "hybrid",
         sender: Annotated[str | None, Field(description="From: sender name or address contains this text")] = None,

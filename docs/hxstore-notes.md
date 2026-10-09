@@ -185,7 +185,7 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 
 The importer resolves the reference against the profile folder (refusing paths that escape it) and stores `local_path` only when the file exists. Otherwise `local_path` is NULL and the tools say "open this message in Outlook to download it, then sync". Because HxStore is a live cache, the importer re-reads every message on each sync, so attachments downloaded later become available.
 
-Files that no record references (orphans) are indexed separately. See Orphan files in the README. The scan reads `Files/S0/<n>/Attachments/**` and `Files/S0/<n>/EFMData/*.dat`, ignores `*cleanup*` folders, and strips the `[k]` uniquifier to get the display name.
+Files that no record references (orphans) are indexed separately. See [data-sources.md](data-sources.md#orphan-files). The scan reads `Files/S0/<n>/Attachments/**` and `Files/S0/<n>/EFMData/*.dat`, ignores `*cleanup*` folders, and strips the `[k]` uniquifier to get the display name.
 
 The sample did not include the `Files/` folder, so the mapping from reference to real file is verified only in format, not against real files. See experiment 1.
 

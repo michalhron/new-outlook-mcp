@@ -15,7 +15,8 @@ from pathlib import Path
 
 from .model import MessageRecord, normalize_message_id
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+"""Bump when SCHEMA changes. Added columns are created by `migrate`; data changes go in `_DATA_MIGRATIONS`."""
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -77,9 +78,13 @@ CREATE TABLE IF NOT EXISTS message_sources (
     message_pk INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
+    -- Account this source holds the message in. A message merged from two
+    -- accounts (e.g. work Outlook and HEY) belongs to the realms of both.
+    account_id INTEGER REFERENCES accounts(id),
     PRIMARY KEY (source, source_key)
 );
 CREATE INDEX IF NOT EXISTS idx_msrc_pk ON message_sources(message_pk);
+CREATE INDEX IF NOT EXISTS idx_msrc_account ON message_sources(account_id);
 
 CREATE TABLE IF NOT EXISTS attachments (
     id INTEGER PRIMARY KEY,
@@ -310,6 +315,98 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+class SchemaOutdatedError(RuntimeError):
+    """A read-only open found an archive that needs `migrate` first."""
+
+
+def schema_version(conn: sqlite3.Connection) -> int:
+    """Schema version stored in the archive. 0 for a new file, 1 for archives made before versioning worked."""
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    except sqlite3.OperationalError:
+        return 0
+    return int(row[0]) if row else 0
+
+
+def _column_ddl(col: sqlite3.Row | tuple) -> str:
+    """`name type [NOT NULL] [DEFAULT x]` for ALTER TABLE ADD COLUMN, from a PRAGMA table_info row."""
+    _cid, name, ctype, notnull, default, pk = col
+    if pk:
+        raise RuntimeError(f"cannot add primary key column {name} to an existing table")
+    ddl = f"{name} {ctype}".strip()
+    if notnull:
+        if default is None:
+            raise RuntimeError(f"cannot add NOT NULL column {name} without a default")
+        ddl += " NOT NULL"
+    if default is not None:
+        ddl += f" DEFAULT {default}"
+    return ddl
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> list[str]:
+    """Add columns that SCHEMA has and existing tables lack. Returns `table.column` for each one added.
+
+    Compares against a scratch in-memory database built from SCHEMA. Virtual tables
+    (FTS, vectors) are skipped: they cannot be altered and are rebuilt by their owners.
+    """
+    ref = sqlite3.connect(":memory:")
+    try:
+        ref.executescript(SCHEMA)
+        tables = [r[0] for r in ref.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%'"
+            " AND name NOT LIKE 'sqlite_%'")]
+        added = []
+        for table in tables:
+            have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if not have:  # table does not exist yet; SCHEMA creates it
+                continue
+            for col in ref.execute(f"PRAGMA table_info({table})"):
+                if col[1] not in have:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {_column_ddl(tuple(col))}")
+                    added.append(f"{table}.{col[1]}")
+        return added
+    finally:
+        ref.close()
+
+
+def _backfill_source_accounts(conn: sqlite3.Connection) -> None:
+    """v2: sources that first imported a message hold it in the message's own account.
+
+    Sources that merged into a message imported by another source get their account
+    on the next sync of that source with --full.
+    """
+    conn.execute(
+        """UPDATE message_sources SET account_id = (SELECT m.account_id FROM messages m WHERE m.id = message_pk)
+           WHERE account_id IS NULL
+             AND source = (SELECT m.first_source FROM messages m WHERE m.id = message_pk)""")
+
+
+#: Data changes per schema version, run once when an archive is upgraded to that version.
+_DATA_MIGRATIONS = {2: _backfill_source_accounts}
+
+
+def migrate(conn: sqlite3.Connection) -> list[str]:
+    """Bring an archive to SCHEMA_VERSION. Safe to run on every open; returns what changed."""
+    before = schema_version(conn)
+    if before > SCHEMA_VERSION:
+        raise RuntimeError(f"archive schema version {before} is newer than this program ({SCHEMA_VERSION}); "
+                           "upgrade new-outlook-mcp")
+    changes: list[str] = []
+    with conn:
+        if before:
+            changes += [f"added column {c}" for c in _add_missing_columns(conn)]
+    conn.executescript(SCHEMA)
+    with conn:
+        if before:
+            for version in range(before + 1, SCHEMA_VERSION + 1):
+                if version in _DATA_MIGRATIONS:
+                    _DATA_MIGRATIONS[version](conn)
+                    changes.append(f"ran data migration {version}")
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
+                     (str(SCHEMA_VERSION),))
+    return changes
+
+
 @dataclass
 class UpsertResult:
     pk: int
@@ -320,6 +417,8 @@ class Archive:
     def __init__(self, path: Path | str, *, readonly: bool = False):
         self.path = Path(path)
         self.readonly = readonly
+        #: What opening this archive upgraded (see `migrate`). Empty when nothing changed.
+        self.migrated: list[str] = []
         if readonly:
             if not self.path.exists():
                 raise FileNotFoundError(f"archive database not found: {self.path}")
@@ -332,11 +431,11 @@ class Archive:
         self.conn.execute("PRAGMA foreign_keys = ON")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode = WAL")
-            self.conn.executescript(SCHEMA)
-            self.conn.execute(
-                "INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),)
-            )
-            self.conn.commit()
+            self.migrated = migrate(self.conn)
+        elif 0 < schema_version(self.conn) < SCHEMA_VERSION:
+            raise SchemaOutdatedError(
+                f"archive {self.path} has schema version {schema_version(self.conn)}, this version needs "
+                f"{SCHEMA_VERSION}. Run `new-outlook status` once to upgrade it.")
 
     def close(self) -> None:
         self.conn.close()
@@ -471,11 +570,12 @@ class Archive:
                 sets = ", ".join(f"{c} = ?" for c in updates)
                 self.conn.execute(f"UPDATE messages SET {sets} WHERE id = ?", [*updates.values(), pk])
         self.conn.execute(
-            """INSERT INTO message_sources(source, source_key, message_pk, first_seen, last_seen)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO message_sources(source, source_key, message_pk, first_seen, last_seen, account_id)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(source, source_key) DO UPDATE SET message_pk = excluded.message_pk,
-                                                             last_seen = excluded.last_seen""",
-            (rec.source, rec.source_key, pk, now, now),
+                                                             last_seen = excluded.last_seen,
+                                                             account_id = excluded.account_id""",
+            (rec.source, rec.source_key, pk, now, now, account_id),
         )
         self._reindex(pk)
         return UpsertResult(pk=pk, inserted=inserted)
@@ -522,7 +622,8 @@ class Archive:
         self.conn.execute(
             """DELETE FROM accounts WHERE id NOT IN (SELECT account_id FROM messages WHERE account_id IS NOT NULL)
                AND id NOT IN (SELECT account_id FROM folders WHERE account_id IS NOT NULL)
-               AND id NOT IN (SELECT account_id FROM calendars WHERE account_id IS NOT NULL)""")
+               AND id NOT IN (SELECT account_id FROM calendars WHERE account_id IS NOT NULL)
+               AND id NOT IN (SELECT account_id FROM message_sources WHERE account_id IS NOT NULL)""")
 
     def _replace_attachments(self, pk: int, rec: MessageRecord) -> None:
         self.conn.execute("DELETE FROM attachments WHERE message_pk = ? AND source = ?", (pk, rec.source))

@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from . import launchd, paths
@@ -94,17 +94,9 @@ def cmd_snapshot(args) -> int:
 
 
 def _write_files_listing(root: Path, out: Path) -> int:
-    """Path (relative to Files/), size and mtime of every cached file. Reads metadata only."""
-    n = 0
-    with open(out, "w", encoding="utf-8") as fh:
-        fh.write("path\tsize\tmtime_utc\n")
-        for p in sorted(root.rglob("*")):
-            if p.is_file():
-                st = p.stat()
-                mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
-                fh.write(f"{p.relative_to(root)}\t{st.st_size}\t{mtime}\n")
-                n += 1
-    return n
+    from .snapshot import write_files_listing
+
+    return write_files_listing(root, out)
 
 
 def cmd_backup_legacy(args) -> int:
@@ -222,6 +214,46 @@ def cmd_coverage(args) -> int:
     return 0
 
 
+def cmd_validate(args) -> int:
+    from . import validate
+
+    report_path, report = validate.run(
+        legacy_dir=args.legacy_dir, hxstore=args.hxstore, backup_dir=args.backup_dir,
+        skip_backup=args.skip_backup, work_dir=args.work_dir, report_path=args.report,
+        expect_legacy=args.expect_legacy)
+    overall = report.splitlines()[1]
+    print(f"\n{overall}\nreport written to {report_path}")
+    print("It holds counts and labels only. Paste it into a Claude session.")
+    return 0 if overall.endswith("PASS") else 1
+
+
+def cmd_experiment(args) -> int:
+    from . import experiments as ex
+
+    try:
+        if args.action == "list":
+            for key, e in ex.EXPERIMENTS.items():
+                print(f"{key}: {e.title}")
+            return 0
+        if not args.name:
+            print("give the experiment a name, e.g. new-outlook experiment start pair1 --kind pair", file=sys.stderr)
+            return 2
+        if args.action == "start":
+            d, e = ex.start(args.name, args.kind, hxstore=args.hxstore, base=args.dir,
+                            markers=tuple(args.marker or ex.DEFAULT_MARKERS))
+            print(f"'before' snapshot saved in {d}")
+            print(f"\nNow, in Outlook ({e.title}):")
+            for i, step in enumerate(e.steps, 1):
+                print(f"  {i}. {step.replace('NAME', args.name)}")
+            return 0
+        report = ex.finish(args.name, base=args.dir)
+        print(f"report written to {report}\nIt contains structure and probe strings only. Paste it to Claude.")
+        return 0
+    except ex.ExperimentError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
 def cmd_serve(args) -> int:
     from .server import build_server
 
@@ -284,6 +316,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--until", help="anchor date YYYY-MM-DD (default: newest message)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_coverage)
+
+    s = sub.add_parser("validate", help="back up, import everything into a fresh archive, write a shareable report")
+    s.add_argument("--legacy-dir", type=Path, help="legacy Data folder (default: Outlook's own)")
+    s.add_argument("--hxstore", type=Path, help="path to HxStore.hxd (default: Outlook's own)")
+    s.add_argument("--backup-dir", type=Path, help="legacy backup folder (default ~/new-outlook-legacy-backup)")
+    s.add_argument("--skip-backup", action="store_true", help="import the legacy data in place, no backup")
+    s.add_argument("--work-dir", type=Path, help="where the fresh test archive goes (default: app dir/validate/<time>)")
+    s.add_argument("--report", type=Path, help="report file (default ./new-outlook-validate-<time>.txt)")
+    s.add_argument("--expect-legacy", type=int, default=None, help="expected legacy message count, e.g. 9150")
+    s.set_defaults(func=cmd_validate)
+
+    s = sub.add_parser("experiment", help="before/after snapshot of New Outlook's cache with a structural diff")
+    s.add_argument("action", choices=["start", "finish", "list"])
+    s.add_argument("name", nargs="?", help="experiment name, e.g. pair1")
+    s.add_argument("--kind", default="pair", help="which checklist to show (see `experiment list`)")
+    s.add_argument("--dir", type=Path, help="experiments folder (default ~/new-outlook-experiments)")
+    s.add_argument("--hxstore", type=Path, help="path to HxStore.hxd (default: Outlook's own)")
+    s.add_argument("--marker", action="append", help="probe marker; strings containing it are printed (default HXPROBE)")
+    s.set_defaults(func=cmd_experiment)
 
     s = sub.add_parser("serve", help="run the MCP server on stdio")
     s.set_defaults(func=cmd_serve)

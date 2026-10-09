@@ -89,3 +89,37 @@ def copy_tree(src: Path, dst: Path) -> Path:
         raise SnapshotError(f"destination is not empty: {dst}")
     shutil.copytree(src, dst, dirs_exist_ok=True, copy_function=shutil.copy2, symlinks=True)
     return dst
+
+
+def write_files_listing(root: Path, out: Path) -> int:
+    """Path (relative to `root`), size and mtime of every file below it. Reads metadata only."""
+    from datetime import datetime, timezone
+
+    n = 0
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write("path\tsize\tmtime_utc\n")
+        for p in sorted(root.rglob("*")):
+            if p.is_file():
+                st = p.stat()
+                mtime = datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(timespec="seconds")
+                fh.write(f"{p.relative_to(root)}\t{st.st_size}\t{mtime}\n")
+                n += 1
+    return n
+
+
+def read_files_listing(path: Path) -> dict[str, tuple[int, str]]:
+    out = {}
+    if not path.exists():
+        return out
+    for line in path.read_text(encoding="utf-8").splitlines()[1:]:
+        rel, size, mtime = line.split("\t")
+        out[rel] = (int(size), mtime)
+    return out
+
+
+def inside_git_worktree(p: Path) -> bool:
+    p = p.expanduser().resolve()
+    for parent in [p, *p.parents]:
+        if (parent / ".git").exists():
+            return True
+    return False

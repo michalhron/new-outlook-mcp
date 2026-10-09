@@ -22,19 +22,22 @@ Ground rules for every phase:
 **Done when:** tests pass on synthetic data. ✓
 
 ## Phase 1: Validate on real data (local)
-- Run `backup-legacy` to a safe location (legacy store is frozen as of 8 Oct 2026 and may be removed by an Outlook update)
-- Import the real legacy archive. Fix schema and date assumptions the synthetic fixtures got wrong.
-- Register the server in Claude Code and use it for a few days
-- Rename package/CLI to `new-outlook-mcp` / `new-outlook`
+- [ ] Run `backup-legacy` to a safe location (legacy store is frozen as of 8 Oct 2026 and may be removed by an Outlook update). `new-outlook validate` does this on its first run.
+- [ ] Import the real legacy archive. Fix schema and date assumptions the synthetic fixtures got wrong.
+- [ ] Register the server in Claude Code and use it for a few days
+- [x] Rename package/CLI to `new-outlook-mcp` / `new-outlook`
+- [x] `new-outlook validate`: one-command check with a shareable report (no content)
 
 **Done when:** all ~9,150 legacy messages (Sep 2023 → 8 Oct 2026) are searchable from Claude, attachments open, and drafts appear in New Outlook.
 
 ## Phase 2: Decode New Outlook's cache (`HxStore.hxd`)
-- Message records: subject, sender, recipients, dates, folder, account, Message-ID, body, flags
-- Attachment records → mapping to files in `Main Profile/Files/`
-- Calendar records (see Phase 4)
-- Differential experiments (send a known test mail, snapshot, diff) to confirm field encodings
-- Format notes kept current in [hxstore-notes.md](hxstore-notes.md)
+- [x] Message records: subject, sender, recipients, dates, folder, account, Message-ID, body
+- [ ] Message flags and read state, Bcc
+- [x] Attachment records → mapping to files in `Main Profile/Files/` (format verified; real files pending an experiment)
+- [x] Calendar records (see Phase 4); recurrence beyond weekly still open
+- [x] `new-outlook experiment start/finish`: snapshot pair with a structural diff report
+- [ ] Differential experiments run on the real Mac to confirm field encodings
+- [x] Format notes kept current in [hxstore-notes.md](hxstore-notes.md)
 
 **Done when:** the `hxstore` importer extracts every message in the last ~180 days with correct metadata and bodies, and the counts match what Outlook shows per folder.
 

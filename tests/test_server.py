@@ -8,7 +8,7 @@ import anyio
 import pytest
 from mcp import Client
 
-from outlook_archive_mcp.server import build_server
+from new_outlook_mcp.server import build_server
 
 EXPECTED_TOOLS = {
     "search_emails", "get_email", "get_thread", "list_recent", "list_folders", "archive_status",

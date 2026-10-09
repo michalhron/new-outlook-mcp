@@ -200,11 +200,11 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 
 ## Experiments to run locally
 
-Use synthetic content only (made-up subjects, a test PDF). Quit Outlook before each copy and copy `HxStore.hxd` and `Files/` together. `outlook-archive snapshot --source hxstore --dest /tmp/hx-before` makes the copy. Then diff two snapshots by class, id and fixed-region bytes.
+Use synthetic content only (made-up subjects, a test PDF). Quit Outlook before each copy and copy `HxStore.hxd` and `Files/` together. `new-outlook snapshot --source hxstore --dest /tmp/hx-before` makes the copy. Then diff two snapshots by class, id and fixed-region bytes.
 
 1. **Attachment mapping.** Send yourself a message with subject `HXPROBE-A1-<random>`, one Cc and one Bcc address, and a small PDF of known size. Open it so Outlook downloads the PDF. Snapshot. Then run:
    `find "$PROFILE/Files" -type f -newer /tmp/hx-before -exec ls -l {} \;`
-   This shows the new file under `Files/S0/<n>/Attachments/0/`. Check that its size equals the attachment size and that `outlook-archive sync --source hxstore` reports it as available. The Sent Items copy will show whether Bcc has its own recipient kind.
+   This shows the new file under `Files/S0/<n>/Attachments/0/`. Check that its size equals the attachment size and that `new-outlook sync --source hxstore` reports it as available. The Sent Items copy will show whether Bcc has its own recipient kind.
 2. **Read state, flags, importance.** Mark that message read, then unread, then flagged, then high importance, with a snapshot after each step. The byte that changes each time is the field.
 3. **Inline image.** Send an HTML message with an embedded image. The inline flag (+0x2b0 = 2) should be set, and the has-attachment bit should stay clear.
 4. **Recurrence.** Create `HXPROBE-R1` events: every 2 days until a date, monthly on the 2nd Tuesday, weekly on Monday, Wednesday and Friday. Delete one occurrence and move another. Diff area one of each master and look for new occurrence or exception objects.

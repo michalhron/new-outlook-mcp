@@ -29,9 +29,9 @@ def default_source_path(name: str) -> Path:
     raise KeyError(name)
 
 
-def make_importer(name: str, source_path: Path | None = None) -> Importer:
+def make_importer(name: str, source_path: Path | None = None, **options) -> Importer:
     cls = IMPORTERS[name]
-    return cls(source_path or default_source_path(name))
+    return cls(source_path or default_source_path(name), **options)
 
 
 __all__ = ["IMPORTERS", "Importer", "ImportStats", "make_importer", "default_source_path"]

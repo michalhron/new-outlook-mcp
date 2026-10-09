@@ -1,4 +1,4 @@
-"""Command line: new-outlook sync | snapshot | backup-legacy | status | privacy | purge-excluded | launchd | serve."""
+"""Command line: new-outlook sync | watch | snapshot | backup-legacy | status | privacy | purge-excluded | launchd | serve."""
 
 from __future__ import annotations
 
@@ -44,11 +44,16 @@ def _source_paths(args) -> dict[str, Path]:
     return out
 
 
+def _source_options(args) -> dict[str, dict]:
+    return {"hxstore": {"index_orphans": not getattr(args, "no_orphan_files", False),
+                        "include_small_images": getattr(args, "include_small_images", False)}}
+
+
 def cmd_sync(args) -> int:
     names = _source_list(args.source)
     with Archive(args.db) as archive:
         results = sync(archive, names, source_paths=_source_paths(args), keep_snapshot=args.keep_snapshot,
-                       full=args.full)
+                       full=args.full, source_options=_source_options(args))
     stamp = datetime.now().isoformat(timespec="seconds")
     rc = 0
     for r in results:
@@ -64,6 +69,13 @@ def cmd_sync(args) -> int:
                 print(f"  blocks ok={d['blocks_ok']} crc_failed={d['blocks_crc_failed']} "
                       f"decode_failed={d['blocks_decode_failed']} of {d['blocks_found']} "
                       f"(copies taken: {d.get('copy_attempts', 1)}, hxcore.hfl copied: {d.get('hxcore_hfl_copied')})")
+            if "files" in d:
+                f = d["files"]
+                print(f"  Files/ cache: attachments {f.get('attachment_files', 0)} "
+                      f"(linked {f.get('attachment_linked', 0)}, orphan {f.get('attachment_orphans', 0)}, "
+                      f"small images skipped {f.get('small_images_skipped', 0)}), "
+                      f"bodies {f.get('body_files', 0)} (linked {f.get('body_linked', 0)}, "
+                      f"orphan {f.get('body_orphans', 0)}, matched to messages {f.get('body_linked_back', 0)})")
             if "objects" in d:
                 print("  objects " + " ".join(f"{k}={v}" for k, v in d["objects"].items()))
         if r.snapshot_dir:
@@ -140,6 +152,15 @@ def cmd_status(args) -> int:
     for r in st["last_sync_by_source"]:
         print(f"  last {r['source']} sync: {r['status']} at {r['finished_at'] or r['started_at']}"
               f" (new={r['inserted']}, seen={r['seen']})" + (f" {r['message']}" if r["message"] else ""))
+    h = st["sync_health"]
+    print(f"sync health: last sync {h['last_sync_at'] or 'never'}; newest hxstore message {h['newest_hxstore_message'] or 'none'}"
+          + (f" (lag {_hours(h['lag_vs_now_s'])} vs now, {_hours(h['lag_vs_last_sync_s'])} vs last sync)"
+             if h["lag_vs_now_s"] is not None else ""))
+    w = h["watcher"]
+    print(f"  watcher: {'running' if w['alive'] else 'not running'} ({w['reason']})")
+    if h["last_drift_warning"]:
+        d = h["last_drift_warning"]
+        print(f"  last warning: {d['at']} [{d['source']}] {d['status']}: {d['message']}")
     return 0
 
 
@@ -205,17 +226,37 @@ def cmd_purge_excluded(args) -> int:
     return 0
 
 
+def _hours(seconds: float | None) -> str:
+    if seconds is None:
+        return "n/a"
+    return f"{seconds / 3600:.1f} h" if abs(seconds) >= 3600 else f"{seconds / 60:.0f} min"
+
+
 def cmd_launchd(args) -> int:
+    if args.watch:
+        opts: dict = {"watch": True}
+        log_name = "watch.log"
+    else:
+        opts = {"interval_hours": args.interval_hours, "source": args.source}
+        log_name = "sync.log"
+    label = launchd.WATCH_LABEL if args.watch else launchd.LABEL
     if args.action == "print":
-        sys.stdout.write(launchd.render(interval_hours=args.interval_hours, source=args.source).decode())
+        sys.stdout.write(launchd.render(**opts).decode())
         return 0
     if args.action == "install":
-        p = launchd.install(interval_hours=args.interval_hours, source=args.source, load=not args.no_load)
-        print(f"installed {p}\nlogs: {paths.log_dir() / 'sync.log'}")
+        p = launchd.install(load=not args.no_load, **opts)
+        print(f"installed {p}\nlogs: {paths.log_dir() / log_name}")
         return 0
-    removed = launchd.uninstall()
-    print("removed " + str(launchd.plist_path()) if removed else "no LaunchAgent installed")
+    removed = launchd.uninstall(watch=args.watch)
+    print("removed " + str(launchd.plist_path(label)) if removed else "no LaunchAgent installed")
     return 0
+
+
+def cmd_watch(args) -> int:
+    from . import watch
+
+    return watch.run_watch(args.db, hxstore=args.hxstore, debounce=args.debounce, min_interval=args.min_interval,
+                           poll=args.poll, timeout=args.timeout, once=args.once, use_watchdog=not args.no_watchdog)
 
 
 def cmd_calendar(args) -> int:
@@ -346,6 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--keep-snapshot", action="store_true", help="keep the copied source files")
     s.add_argument("--full", action="store_true", help="re-read records that were imported before")
     s.add_argument("--notify", action="store_true", help="macOS notification on failure or suspicious results")
+    s.add_argument("--no-orphan-files", action="store_true",
+                   help="do not index files in Outlook's Files/ folder that no record references")
+    s.add_argument("--include-small-images", action="store_true",
+                   help="also index small orphan png/gif images (under 10 KB, usually signature logos)")
     src_opts(s)
     s.set_defaults(func=cmd_sync)
 
@@ -379,7 +424,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--interval-hours", type=float, default=launchd.DEFAULT_INTERVAL_HOURS)
     s.add_argument("--source", type=_sources_arg, default=LAUNCHD_DEFAULT_SOURCES)
     s.add_argument("--no-load", action="store_true", help="write the plist without loading it")
+    s.add_argument("--watch", action="store_true", help="act on the file watcher agent instead of the periodic job")
     s.set_defaults(func=cmd_launchd)
+
+    s = sub.add_parser("watch", help="watch Outlook's cache files and sync shortly after they change")
+    s.add_argument("--debounce", type=float, default=20, help="seconds without new changes before syncing")
+    s.add_argument("--min-interval", type=float, default=60, help="at most one sync per this many seconds")
+    s.add_argument("--poll", type=float, default=15, help="polling interval in seconds (no watchdog) and heartbeat basis")
+    s.add_argument("--timeout", type=float, default=600, help="stop a sync that runs longer than this many seconds")
+    s.add_argument("--once", action="store_true", help="run one sync now and exit")
+    s.add_argument("--no-watchdog", action="store_true", help="poll file sizes and times even if watchdog is installed")
+    s.add_argument("--hxstore", type=Path, help="path to HxStore.hxd (default: Outlook's own)")
+    s.set_defaults(func=cmd_watch)
 
     s = sub.add_parser("calendar", help="manage published ICS feeds (URLs are kept in a 0600 config file)")
     s.add_argument("action", choices=["list-feeds", "add-feed", "remove-feed", "set-my-addresses"])

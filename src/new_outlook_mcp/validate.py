@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import paths
+from . import orphans, paths
 from .db import Archive
 from .importers.hxstore import HxStoreImporter
 from .importers.legacy import LegacyImporter
@@ -113,6 +113,46 @@ def _import(archive: Archive, importer, work: Path) -> SyncResult:
 
 
 # -------------------------------------------------------------- report
+
+def _files_section(archive: Archive, res: SyncResult | None, checks: list[Check]) -> list[str]:
+    """Linked versus orphan files in Outlook's Files/ folder. Numbers only."""
+    f = res.details.get("files") if res else None
+    lines = ["", "== Files/ cache"]
+    if not f:
+        lines.append("  not scanned (no Files/S0 folder found, or orphan indexing is off)")
+        return lines
+    total = orphans.summary(archive)
+    mb = lambda n: f"{n / 1_000_000:.1f} MB"  # noqa: E731
+    lines += [
+        f"  attachment files: {f.get('attachment_files', 0)} found, {f.get('attachment_linked', 0)} linked to an "
+        f"attachment record, {f.get('attachment_orphans', 0)} orphans indexed",
+        f"  body files (EFMData): {f.get('body_files', 0)} found, {f.get('body_linked', 0)} linked to a message, "
+        f"{f.get('body_orphans', 0)} orphans indexed",
+        f"  orphan bodies matched back to a message: {f.get('body_linked_back', 0)} "
+        f"(by Message-ID {f.get('body_linked_by_message_id', 0)}, by subject and date "
+        f"{f.get('body_linked_by_subject_date', 0)}); preview-only messages upgraded: {f.get('bodies_upgraded', 0)}",
+        "  skipped: " + ", ".join(f"{label} {f.get(key, 0)}" for key, label in (
+            ("small_images_skipped", "small png/gif images"), ("cleanup_dirs_skipped", "cleanup folders"),
+            ("hidden_or_temporary_skipped", "hidden or temporary files"), ("unreadable", "unreadable files"))),
+        f"  text: {f.get('text_extracted', 0)} extracted in this run, {f.get('no_text_expected', 0)} images or other "
+        f"types without text, {f.get('text_extraction_failed', 0)} extraction failures, "
+        f"{f.get('too_large_for_text', 0)} too large",
+        f"  this run: {f.get('new_or_changed', 0)} new or changed, {f.get('unchanged', 0)} unchanged",
+    ]
+    if total:
+        lines.append(f"  archive total: {total['attachments_stored']} orphan attachments and {total['bodies_stored']} "
+                     f"orphan bodies stored, {total['with_text']} with text; {mb(total['bytes_on_disk'])} of "
+                     f"files still on disk, {total['files_gone']} files gone (text kept)")
+    failed = f.get("text_extraction_failed", 0)
+    orphan_n = f.get("attachment_orphans", 0)
+    ok = failed <= max(5, orphan_n // 10)
+    checks.append(Check("Files/ cache", "PASS" if ok else "WARN",
+                        f"{orphan_n} orphan attachments and {f.get('body_orphans', 0)} orphan bodies indexed, "
+                        f"{f.get('body_linked_back', 0)} bodies matched to messages, {failed} text extraction failures",
+                        "" if ok else "Many files could not be read. Run `new-outlook -v sync --source hxstore` "
+                        "and share the warnings."))
+    return lines
+
 
 def build_report(archive: Archive, results: dict[str, SyncResult], checks: list[Check], labels: Labels, *,
                  expect_legacy: int | None, now: datetime, sample_size: int = 10, seed: int | None = None) -> str:
@@ -231,6 +271,9 @@ def build_report(archive: Archive, results: dict[str, SyncResult], checks: list[
                          f"({_pct(local, rows)}); {flagged} messages flagged with attachments, "
                          f"{flagged_without} of them without attachment details")
 
+    # ---- Files/ cache (counts only, never names)
+    files_lines = _files_section(archive, results.get("hxstore"), checks)
+
     # ---- overlap and dedup
     both = count("SELECT COUNT(*) FROM (SELECT message_pk FROM message_sources GROUP BY message_pk "
                  "HAVING COUNT(DISTINCT source) > 1)")
@@ -334,7 +377,7 @@ def build_report(archive: Archive, results: dict[str, SyncResult], checks: list[
         head.append(f"  [{c.status}] {c.name}: {c.detail}")
         if c.todo:
             head.append(f"         what to do: {c.todo}")
-    out = head + fill_lines + att_lines + ov_lines + cnt_lines + cal_lines + smp_lines
+    out = head + fill_lines + att_lines + files_lines + ov_lines + cnt_lines + cal_lines + smp_lines
     out += ["", "Paste this whole report into a Claude session. Keep validate-key.txt to yourself."]
     return "\n".join(out) + "\n"
 

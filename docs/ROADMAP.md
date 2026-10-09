@@ -34,6 +34,8 @@ Ground rules for every phase:
 - [x] Message records: subject, sender, recipients, dates, folder, account, Message-ID, body
 - [ ] Message flags and read state, Bcc
 - [x] Attachment records → mapping to files in `Main Profile/Files/` (format verified; real files pending an experiment)
+- [x] Orphan files: index attachment files and `EFMData` bodies in `Files/` that no record references, `search_files`, validate counts
+- [ ] Check orphan indexing and body matching on the real `Files/` folder (run `new-outlook validate`)
 - [x] Calendar records (see Phase 4); recurrence beyond weekly still open
 - [x] `new-outlook experiment start/finish`: snapshot pair with a structural diff report
 - [ ] Differential experiments run on the real Mac to confirm field encodings
@@ -42,7 +44,8 @@ Ground rules for every phase:
 **Done when:** the `hxstore` importer extracts every message in the last ~180 days with correct metadata and bodies, and the counts match what Outlook shows per folder.
 
 ## Phase 3: Continuous sync
-- [x] launchd agent every ~36 h + `sync_now` tool
+- [x] launchd agent every ~36 h + `sync_now` tool (now the fallback)
+- [x] Near-live sync: `new-outlook watch` (watchdog or polling, debounce, rate limit, backoff) with its own LaunchAgent, heartbeat file and `sync_health` in `archive_status`
 - [x] Archive only grows (except `purge-excluded`). Mail older than New Outlook's window is retained.
 - [x] Drift detection: notify if an import returns zero or far fewer records than expected (Outlook update changed the format)
 - [x] Cross-source dedup (legacy ↔ hxstore overlap Apr–Oct 2026)

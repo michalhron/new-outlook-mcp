@@ -13,7 +13,10 @@ from outlook_archive_mcp.server import build_server
 EXPECTED_TOOLS = {
     "search_emails", "get_email", "get_thread", "list_recent", "list_folders", "archive_status",
     "sync_now", "create_draft", "list_attachments", "get_attachment",
+    "list_calendar_events", "get_calendar_event", "search_calendar", "calendar_freebusy", "find_free_slots",
+    "meeting_prep", "create_event_draft",
 }
+READ_ONLY_TOOLS = EXPECTED_TOOLS - {"sync_now", "create_draft", "create_event_draft"}
 
 
 def _payload(result) -> dict:
@@ -37,9 +40,8 @@ def test_tools_listed_with_read_only_hints(server):
     names = {t.name for t in listed}
     assert EXPECTED_TOOLS <= names
     ann = {t.name: t.annotations for t in listed}
-    for name in ("search_emails", "get_email", "get_thread", "list_recent", "list_folders", "archive_status",
-                 "list_attachments"):
-        assert ann[name].read_only_hint is True
+    for name in READ_ONLY_TOOLS:
+        assert ann[name].read_only_hint is True, name
     schema = next(t for t in listed if t.name == "search_emails").input_schema
     assert "sender" in schema["properties"] and "attachment_name" in schema["properties"]
 
@@ -60,6 +62,19 @@ def test_search_then_get(server):
     assert thread["thread_size"] == 2
     assert status["counts"]["messages"] == 4
     assert atts["attachments"][0]["filename"] == "report.pdf"
+
+
+def test_calendar_tools_over_mcp(server):
+    async def go():
+        async with Client(server) as c:
+            evs = _payload(await c.call_tool("list_calendar_events", {
+                "start": "2026-10-14", "end": "2026-10-14", "timezone": "Europe/Prague"}))
+            prep = _payload(await c.call_tool("meeting_prep", {"event_id": str(evs["events"][0]["event_id"])}))
+            return evs, prep
+
+    evs, prep = anyio.run(go)
+    assert evs["events"][0]["subject"] == "Project kickoff"
+    assert prep["event"]["subject"] == "Project kickoff"
 
 
 def test_bad_input_is_a_tool_error(server):

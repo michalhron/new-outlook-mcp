@@ -107,14 +107,15 @@ For Claude Desktop, add to `claude_desktop_config.json`:
 | Tool | What it does |
 |---|---|
 | `search_emails` | Full-text query (FTS5 syntax: words, `"phrases"`, `OR`, `NOT`, `prefix*`) plus filters `sender`, `recipient`, `folder`, `account`, `date_from`, `date_to`, `has_attachment`, `attachment_name`. Paged with `limit`/`offset`. `mode` is `keyword` (default), `semantic` or `hybrid`, see [Search by meaning](#search-by-meaning). |
-| `semantic_search` | Find mail and attachments by meaning, in English or Czech, with the same filters. Each result is one email whose `snippet` is the best matching passage. |
+| `semantic_search` | Find mail and attachments by meaning, in English, Czech, Danish, Dutch, Finnish and many other languages, with the same filters. Each result is one email whose `snippet` is the best matching passage. |
 | `find_similar` | Emails similar to a given email or attachment. |
 | `get_email` | Metadata, attachment list and plain-text body. Long bodies are paged with `offset`. |
 | `get_thread` | The conversation around a message, via Message-ID/References/In-Reply-To, Outlook's conversation id, and a subject fallback. |
 | `list_recent` | Newest messages, optionally by folder, account or last N days. |
 | `list_folders` | Folders with counts and date ranges. |
 | `list_attachments` | Attachments of a message and whether each is on this Mac. Small inline images (signature logos) are hidden unless `include_inline=true`. |
-| `get_attachment` | `mode="text"` extracts text, `"path"` returns a local path, `"open"` opens it in its default app. |
+| `get_attachment` | `mode="text"` extracts text, `"path"` returns a local path, `"open"` opens it in its default app. Also takes `orphan:<n>` ids from `search_files`. |
+| `search_files` | Full-text search over orphan files (see Orphan files): attachment files and bodies in Outlook's cache that no archived message owns. Filters `kind` (`attachment` or `body`), `date_from`, `date_to` (file dates). |
 | `archive_status` | Message counts, date coverage per source, last sync per source. |
 | `sync_now` | Runs an import from the local files. |
 | `create_draft` | Opens a prefilled draft (to, cc, bcc, subject, body) in the default mail app. You send it. |
@@ -172,11 +173,11 @@ new-outlook embed --download
 
 `embed --download` fetches the model weights from Hugging Face once. That is the only network access, it happens only when you pass `--download`, and none of your mail is sent anywhere. Embeddings are computed on this Mac (Apple GPU through MPS when available, else CPU). Syncing and the MCP server never download anything.
 
-- Model. `intfloat/multilingual-e5-small`: 384 dimensions, about 118M parameters, a download of about 470 MB, trained on 100 languages including English and Czech, and fast on Apple Silicon. `BAAI/bge-m3` (1024 dimensions, about 2.3 GB) is stronger on long and cross-language text but slower and larger. Pick it with `new-outlook embed --model BAAI/bge-m3`. One archive uses one model. Switch with `new-outlook embed --reembed --model NAME`, which deletes the old vectors first.
+- Model. `intfloat/multilingual-e5-small`: 384 dimensions, about 118M parameters, a download of about 470 MB, trained on about 100 languages including English, Czech, Danish, Dutch and Finnish, and fast on Apple Silicon. A query in one language also finds mail in another. `BAAI/bge-m3` (1024 dimensions, about 2.3 GB) is stronger on long and cross-language text but slower and larger. Pick it with `new-outlook embed --model BAAI/bge-m3`. One archive uses one model. Switch with `new-outlook embed --reembed --model NAME`, which deletes the old vectors first.
 - Time and disk. Plan on roughly 10 to 30 minutes per 10,000 messages with the small model, and about 2 KB of database per chunk (a message has a few chunks). A mailbox of 50,000 messages adds a few hundred MB. These are estimates until measured on a real archive.
 - Resumable. `embed` commits after every batch and prints done/total, rate and ETA. Press Ctrl-C at any time and run it again to continue. Newest mail is embedded first. Useful options: `--limit N`, `--batch 32`, `--status`.
 - Incremental. Once `embed` has run, every `sync` embeds the new mail (at most 2,000 messages per sync, the rest waits for the next `embed`). A sync never downloads a model.
-- What is embedded. The subject, the body without quoted replies and signatures (English and Czech reply headers are recognized), and the text of PDF, Word, Excel and text attachments that are stored on this Mac.
+- What is embedded. The subject, the body without quoted replies and signatures (reply headers, "wrote:" lines and sign-offs are recognized in English, Czech, German, French, Spanish, Italian, Danish, Dutch and Finnish), and the text of PDF, Word, Excel and text attachments that are stored on this Mac.
 - Search. `semantic_search` and `search_emails mode=hybrid` fuse the keyword ranking and the meaning ranking with Reciprocal Rank Fusion. Results are grouped by email, show the best matching passage as the snippet, and say whether the subject, body or an attachment matched. `search_emails` stays keyword-only unless you ask for another mode. From a terminal: `new-outlook search --mode hybrid "reviewer comments about construct validity"`.
 - Storage. Vectors live in the same SQLite file, in a `sqlite-vec` table when the extension can load, else as blobs searched with numpy. If the extra is missing, the tools say how to install it and `hybrid` falls back to keyword results.
 
@@ -194,6 +195,34 @@ Options: `--interval-hours 36`, `--source` with one source or a comma list (defa
 
 The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS notification when an import fails, when it finds zero messages or calendar events although earlier runs found some, or when HxStore objects have a layout it does not know. The last two usually mean an Outlook update changed the file format.
 
+## Near-live sync
+
+The 36 hour job is the fallback. The primary mechanism is a watcher that syncs a minute or so after Outlook changes its cache. Install both agents:
+
+```sh
+pip install 'new-outlook-mcp[watch]'   # optional: watchdog uses FSEvents instead of polling
+new-outlook launchd install --watch    # watcher, kept alive by launchd (log: watch.log)
+new-outlook launchd install            # 36 hour fallback job
+new-outlook launchd print --watch      # show the watcher plist
+new-outlook launchd uninstall --watch
+```
+
+You can also run it by hand with `new-outlook watch`. Add `--once` to sync now and exit.
+
+How it works:
+
+- It watches `HxStore.hxd`, `hxcore.hfl` and the `Files/` folder in the Outlook profile.
+- Debounce: it waits until 20 s pass with no new change (`--debounce`). A burst of writes gives one sync.
+- Rate limit: at most one sync per 60 s (`--min-interval`).
+- Without watchdog it polls file sizes and modification times every 15 s (`--poll`).
+- Each sync runs `new-outlook sync --source hxstore` in a child process with a 600 s time limit (`--timeout`). Memory goes back to the system afterwards.
+- If the copy was torn (Outlook was writing) or the sync fails, the watcher waits 5 minutes and tries again.
+- It writes `watch-state.json` in the app folder with a heartbeat. `new-outlook status` and the `archive_status` tool show a `sync_health` block: last sync, lag between the newest archived message and now, whether the watcher is alive, and the last drift warning.
+
+What it costs: an idle watcher uses almost no CPU. A sync copies the store and decodes it, which takes seconds to a minute depending on size. The agent runs with low CPU and disk priority (`Nice`, `LowPriorityIO`, `ProcessType=Background`), so Outlook keeps priority. It never writes to Outlook's files.
+
+Limits: there is no way to fetch mail from the server on demand. The archive only sees what New Outlook has cached. Searching in Outlook for an old message makes Outlook download the results into its cache. The watcher then picks them up within about a minute. This is the on-demand workaround.
+
 ## How it stays read-only
 
 - Every import starts with a snapshot: Outlook's database files are copied to a private, timestamped folder under `~/Library/Application Support/new-outlook-mcp/snapshots/`. A copy that changes while it is being copied is retried. Parsers read only the copy, and SQLite copies are opened with `mode=ro&immutable=1` after the WAL has been folded into the copy.
@@ -202,6 +231,52 @@ The job runs `new-outlook sync --source hxstore,ics --notify`. It shows a macOS 
 - `create_draft` only runs `open mailto:...`.
 
 The snapshot is deleted after a successful import. Keep it with `--keep-snapshot`, or take one by hand with `new-outlook snapshot`.
+
+## Privacy scopes
+
+Some mail must never be retrievable, such as grades, hiring and HR. Privacy scopes are exclusion rules in the private `config.toml` (mode 600). Excluded mail is never written to the archive and no tool ever returns it.
+
+```toml
+[exclude]
+accounts = ["me@other.example"]          # account address
+folders = ["Grades", "deleteditems"]     # folder name or path, case-insensitive
+senders = ["hr@corp.example"]            # exact sender address
+domains = ["hiring.example"]             # sender domain, subdomains match too
+subject_keywords = ["exam results"]      # case-insensitive substring of the subject
+attachment_names = ["*grades*.xlsx"]     # file name patterns, case-insensitive
+recipients = ["committee@uni.example"]   # address found in To, Cc or Bcc
+```
+
+Manage the rules with the CLI:
+
+```sh
+new-outlook privacy show                                  # prints your rules and how many archived items they hide
+new-outlook privacy add --folder Grades --domain hiring.example
+new-outlook privacy remove --folder Grades
+new-outlook purge-excluded --dry-run                      # counts only
+new-outlook purge-excluded                                # delete what was imported before the rule existed
+```
+
+Options for `add` and `remove`: `--account`, `--folder`, `--sender`, `--domain`, `--subject-keyword`, `--attachment-name`, `--recipient`. A typo in the `[exclude]` table is an error, so the sync and the tools stop instead of ignoring the rule.
+
+How the rules apply:
+
+- At import: A message that matches any rule is dropped before it is stored. Every importer goes through the same filter. `sync` reports only a count (`excluded=N`). It never logs what matched.
+- At query time: Rules can change after an import, so every read path filters again: `search_emails` (full-text and filters), `get_email` (an excluded message is "not found"), `get_thread`, `list_recent`, `list_folders` (excluded folders are hidden and counts leave out hidden mail), `list_attachments`, `get_attachment`, `meeting_prep`, the calendar tools and the counts in `archive_status`. Adding a rule takes effect on the next tool call without a restart.
+- Orphan files from `Files/` (see "Orphan files") have no sender, account or folder. A file linked to a message follows that message. An unlinked file is hidden when its name matches an attachment-name or subject-keyword rule, or when its text contains a subject keyword, an excluded sender or an address in an excluded domain. Account, folder and recipient rules cannot be checked for unlinked files. Excluded files are not indexed, and `purge-excluded` removes ones indexed earlier.
+- Purge: `purge-excluded` deletes the matching messages, their attachment rows, search index rows, source records and decoded attachment files, plus matching events with their attendees and instances. It then compacts the database so deleted text does not stay in free pages. It prints counts only.
+- Status: `archive_status` reports `privacy: {active, rules, hidden_messages, hidden_events}`. These are counts only.
+
+Matching details:
+
+- Folder rules match a folder name or any part of its path, so `Grades` also hides `Inbox/Grades` and its subfolders. Names like `deleteditems`, `junk`, `sentitems`, `drafts` and `archive` match the well-known folders.
+- A rule on a folder or account hides the whole folder or account, including its entry in `list_folders`.
+- An `attachment_names` rule hides the whole message, not only the file.
+- Recipient rules match the address anywhere in the To, Cc and Bcc lists.
+- Calendar events follow the `accounts`, `senders` and `domains` rules (applied to the organizer) and `subject_keywords`. Folder, attachment and recipient rules do not apply to events. Free/busy and free-slot results also leave out hidden events, so a hidden meeting shows as free time.
+- If a rule hides the first event of a recurring series, its modified occurrences are hidden too.
+
+Limits: rules see only what the importers extract. A sender rule needs a sender address, and an attachment rule needs attachment details. A second copy of a message that lacks them is judged on its own. Messages the filter drops are not recorded, so the next sync reads them again and drops them again. Remove a rule and the next sync brings the mail back.
 
 ## Configuration
 
@@ -216,7 +291,7 @@ The snapshot is deleted after a successful import. Keep it with `--keep-snapshot
 
 ## Archive layout
 
-`archive.db` holds `messages` (one row per unique message, with raw RFC 822 source zlib-compressed when available and under 5 MB), `messages_fts` (FTS5 over subject, sender, recipients, body), `message_sources` (which importer saw which message under which source key, used for incremental imports and coverage), `folders`, `accounts`, `attachments` (filename, size, content type, content-id, inline flag, source, local path or NULL) and `sync_runs`.
+`archive.db` holds `messages` (one row per unique message, with raw RFC 822 source zlib-compressed when available and under 5 MB), `messages_fts` (FTS5 over subject, sender, recipients, body), `message_sources` (which importer saw which message under which source key, used for incremental imports and coverage), `folders`, `accounts`, `attachments` (filename, size, content type, content-id, inline flag, source, local path or NULL), `orphan_files` with `orphan_fts` (files in `Files/` that no message owns, with their copied text) and `sync_runs`.
 
 Deduplication uses the Internet Message-ID. Without one, it uses a SHA-256 of sender address, date and subject. When two sources hold the same message, the first import wins for every field it filled, and later sources only fill gaps.
 
@@ -275,6 +350,20 @@ What to expect:
 - `new-outlook coverage` shows message counts per account and folder by week and by day, from the archive or straight from a copy (`--hxstore PATH`). Use it to see how far back the cache reaches and whether recent days have gaps.
 - `new-outlook snapshot --source hxstore --dest DIR` keeps a decoded copy plus `files-listing.tsv` for before/after experiments. The listing contains attachment file names, so keep `DIR` outside the repository.
 - Read state, flags and Bcc are not decoded yet.
+
+### Orphan files
+
+Outlook keeps files in `Main Profile/Files/` long after their messages leave the cache. On one profile that was about 2,900 attachment files for 730 attachment records, and about 900 cached bodies for 33 referenced ones. The sync indexes the files that no record points to ("orphans") so their content is not lost:
+
+- It scans `Files/S0/<n>/Attachments/**` and `Files/S0/<n>/EFMData/*.dat`. It skips `AadLogos`, `NonPersisted`, `Data`, `MimeFiles` and every `*cleanup*` folder. Hidden and temporary files are skipped too.
+- For each orphan attachment it stores the display name (Outlook's `[1]` uniquifier removed), size, type, file date, SHA-256 and the extracted text (PDF, Word, Excel, plain text, CSV, calendar, HTML). Images keep no text. Small png and gif files under 10 KB are skipped because they are mostly signature logos. Use `new-outlook sync --include-small-images` to keep them.
+- For each orphan body it decompresses the HTML and stores the text. It then tries to match the body to a message by the Message-ID found in the HTML, or by `<title>` and file date when exactly one message fits. A matched body upgrades a message that only has a preview. A body that matches nothing, or more than one message, stays an orphan.
+- The text is copied into the archive. Binary files are never copied. When Outlook later deletes a file, `search_files` and `get_attachment mode="text"` still work, and the entry shows `available_locally: false`.
+- Later syncs skip files whose path, size and date did not change. Use `--no-orphan-files` to turn the scan off.
+
+Find orphans with `search_files`. Each hit has an `attachment_id` like `orphan:12`. Pass it to `get_attachment` for text, a path, or to open the file. `search_emails` and `list_attachments` do not change, and orphan bodies matched to a message are found through `search_emails`.
+
+What this means for coverage: orphans have no sender, recipients or folder, and their date is the date of the file, not of the message. They add content that the message index lacks, but they do not make the mail archive more complete. `new-outlook validate` prints linked and orphan counts in a "Files/ cache" section (counts only, no file names).
 
 ## Development
 

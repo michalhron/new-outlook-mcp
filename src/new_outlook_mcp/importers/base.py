@@ -77,6 +77,10 @@ class Importer(ABC):
         """Yield calendar events. Events are always re-read: they change."""
         return iter(())
 
+    def finish_files(self, archive) -> dict | None:
+        """Called after all messages were stored. Importers with files outside the records index them here."""
+        return None
+
     def finish_events(self, archive, seen_keys: set[str]) -> int:
         """Called after all events were stored, inside a transaction. Returns events removed."""
         return 0

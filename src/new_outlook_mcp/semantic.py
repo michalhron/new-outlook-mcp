@@ -440,7 +440,7 @@ def search_by_mode(archive: Archive, query: str | None, mode: str, where: list[s
 
 def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, offset: int = 0,
                     sort: str = "relevance", **filters) -> dict:
-    where, params = tools._filter_clauses(**filters)
+    where, params = tools._filter_clauses(archive, **filters)
     return search_by_mode(archive, query, mode, where, params, sort=sort, limit=tools._clamp_limit(limit),
                           offset=max(0, int(offset)))
 

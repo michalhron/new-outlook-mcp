@@ -2,7 +2,7 @@
 
 Default model: `intfloat/multilingual-e5-small`.
   * 384 dimensions, about 118M parameters, a ~470 MB download, 512 token window.
-  * Trained on 100 languages including English and Czech.
+  * Trained on about 100 languages including English, Czech, Danish, Dutch and Finnish.
   * Fast on Apple Silicon: a few hundred short chunks per second on CPU or MPS, so
     an archive of tens of thousands of mails embeds in well under an hour.
   * Needs the prefixes "query: " and "passage: ", which this module adds.

@@ -102,7 +102,13 @@ def _capture(hxstore: Path, dest: Path) -> dict:
     dest.mkdir(parents=True, exist_ok=True)
     os.chmod(dest, 0o700)
     imp = HxStoreImporter(hxstore)
-    copy = imp.snapshot(dest)
+    layout_error = None
+    try:
+        copy = imp.snapshot(dest)
+    except hx.HxStoreLayoutError as exc:
+        # Exactly when an experiment is most useful: keep the copy, report the error, diff non-strictly.
+        layout_error = str(exc)
+        copy = dest / "attempt1" / hxstore.name
     profile = hxstore.parent
     files = profile / "Files"
     n_files = write_files_listing(files, dest / "files-listing.tsv") if files.is_dir() else 0
@@ -116,6 +122,7 @@ def _capture(hxstore: Path, dest: Path) -> dict:
                             HFL_NAME: hfl.stat().st_mtime if hfl.exists() else None},
         "files_listed": n_files,
         "details": imp.details,
+        "layout_error": layout_error,
     }
 
 
@@ -252,6 +259,9 @@ def build_report(d: Path, meta: dict) -> str:
         if mt_b.get(f) is not None and mt_a.get(f) is not None:
             out.append(f"  {f} modified between snapshots: {'yes' if mt_a[f] != mt_b[f] else 'no'}")
     out.append(f"  blocks before: ok={b_blocks.valid}/{b_blocks.found}; after: ok={a_blocks.valid}/{a_blocks.found}")
+    for label, m in (("before", b_meta), ("after", a_meta)):
+        if m.get("layout_error"):
+            out.append(f"  LAYOUT CHANGED ({label}): {m['layout_error']}")
     out.append("")
 
     out.append("== Object changes by class (new / changed / removed)")

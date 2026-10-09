@@ -8,12 +8,15 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import time
 import subprocess
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 from . import attachments as att_mod
+from . import privacy
 from .db import Archive, normalize_subject
 from .model import normalize_message_id
 
@@ -99,13 +102,16 @@ LEFT JOIN accounts a ON a.id = m.account_id
 
 
 def _resolve_id(archive: Archive, email_id: str | int) -> sqlite3.Row:
+    """Find a message by archive id or Message-ID. Messages hidden by a privacy rule count as not found."""
     conn = archive.conn
     row = None
     s = str(email_id).strip()
+    vis, vparams = privacy.message_visible(conn)
     if s.isdigit():
-        row = conn.execute(_BASE_SELECT + " WHERE m.id = ?", (int(s),)).fetchone()
+        row = conn.execute(_BASE_SELECT + f" WHERE m.id = ? AND {vis}", (int(s), *vparams)).fetchone()
     if row is None and s:
-        row = conn.execute(_BASE_SELECT + " WHERE m.message_id = ?", (normalize_message_id(s),)).fetchone()
+        row = conn.execute(_BASE_SELECT + f" WHERE m.message_id = ? AND {vis}",
+                           (normalize_message_id(s), *vparams)).fetchone()
     if row is None:
         raise ToolInputError(f"no email with id {email_id!r}")
     return row
@@ -114,6 +120,7 @@ def _resolve_id(archive: Archive, email_id: str | int) -> sqlite3.Row:
 # ------------------------------------------------------------------- tools
 
 def _filter_clauses(
+    archive: Archive,
     *,
     from_: str | None = None,
     to: str | None = None,
@@ -124,7 +131,10 @@ def _filter_clauses(
     has_attachment: bool | None = None,
     attachment_name: str | None = None,
 ) -> tuple[list[str], list[object]]:
-    """SQL conditions (over messages m, folders f, accounts a) shared by every search mode."""
+    """SQL conditions (over messages m, folders f, accounts a) shared by every search mode.
+
+    Always includes the privacy-scope condition, so every caller hides excluded mail.
+    """
     where: list[str] = []
     params: list[object] = []
     if attachment_name:
@@ -153,6 +163,9 @@ def _filter_clauses(
     if has_attachment is not None:
         where.append("m.has_attachment = ?")
         params.append(int(bool(has_attachment)))
+    vis, vparams = privacy.message_visible(archive.conn)
+    where.append(vis)
+    params += vparams
 
     return where, params
 
@@ -178,7 +191,7 @@ def search_emails(
     offset = max(0, int(offset))
     if mode not in ("keyword", "semantic", "hybrid"):
         raise ToolInputError("mode must be 'keyword', 'semantic' or 'hybrid'")
-    where, params = _filter_clauses(from_=from_, to=to, folder=folder, account=account, date_from=date_from,
+    where, params = _filter_clauses(archive, from_=from_, to=to, folder=folder, account=account, date_from=date_from,
                                     date_to=date_to, has_attachment=has_attachment, attachment_name=attachment_name)
     fallback_note = None
     if mode == "semantic" or (mode == "hybrid" and (query or "").strip()):
@@ -336,8 +349,10 @@ def get_thread(
         method = "subject"
 
     marks = ",".join("?" * len(ids))
+    vis, vparams = privacy.message_visible(conn)
     rows = conn.execute(
-        _BASE_SELECT + f" WHERE m.id IN ({marks}) ORDER BY m.date_ts IS NULL, m.date_ts ASC", list(ids)
+        _BASE_SELECT + f" WHERE m.id IN ({marks}) AND {vis} ORDER BY m.date_ts IS NULL, m.date_ts ASC",
+        [*ids, *vparams]
     ).fetchall()
     total = len(rows)
     rows = rows[-max(1, int(max_messages)):]
@@ -374,27 +389,75 @@ def list_recent(
 
 
 def list_folders(archive: Archive) -> dict:
-    rows = archive.conn.execute(
-        """SELECT f.name AS folder, a.name AS account, COUNT(m.id) AS messages,
+    conn = archive.conn
+    vis, vparams = privacy.message_visible(conn)
+    hidden = privacy.hidden_folder_ids(conn)
+    rows = conn.execute(
+        f"""SELECT f.id, f.name AS folder, a.name AS account, COUNT(m.id) AS messages,
                   MIN(m.date_utc) AS oldest, MAX(m.date_utc) AS newest
            FROM folders f LEFT JOIN accounts a ON a.id = f.account_id
-           LEFT JOIN messages m ON m.folder_id = f.id
-           GROUP BY f.id ORDER BY a.name, f.name"""
+           LEFT JOIN messages m ON m.folder_id = f.id AND {vis}
+           GROUP BY f.id ORDER BY a.name, f.name""", vparams
     ).fetchall()
-    unfiled = archive.conn.execute("SELECT COUNT(*) FROM messages WHERE folder_id IS NULL").fetchone()[0]
-    out = {"folders": [dict(r) for r in rows]}
+    unfiled = conn.execute(f"SELECT COUNT(*) FROM messages m WHERE m.folder_id IS NULL AND {vis}",
+                           vparams).fetchone()[0]
+    out = {"folders": [{k: r[k] for k in r.keys() if k != "id"} for r in rows if r["id"] not in hidden]}
     if unfiled:
         out["messages_without_folder"] = unfiled
     return out
 
 
 def archive_status(archive: Archive) -> dict:
+    """Archive size and coverage, counted without the messages and events that privacy rules hide."""
+    conn = archive.conn
+    rules = privacy.load_rules()
+    mf, ef = privacy.message_visible(conn, "m", rules), privacy.event_visible(conn, "e", rules)
+    counts = archive.counts(message_filter=mf, event_filter=ef)
+    counts["folders"] -= len(privacy.hidden_folder_ids(conn, rules))
+    if rules.accounts:
+        counts["accounts"] -= len(privacy.hidden_account_ids(conn, rules))
     return {
         "database": str(archive.path),
-        "counts": archive.counts(),
-        "coverage_by_source": archive.coverage(),
-        "calendar_coverage_by_source": archive.calendar_coverage(),
+        "counts": counts,
+        "coverage_by_source": archive.coverage(mf),
+        "calendar_coverage_by_source": archive.calendar_coverage(ef),
         "last_sync_by_source": archive.last_runs(),
+        "privacy": privacy.status(conn, rules),
+        "sync_health": sync_health(archive),
+    }
+
+
+def _parse_ts(value: str | None) -> float | None:
+    try:
+        dt = datetime.fromisoformat(value) if value else None
+    except ValueError:
+        return None
+    if dt is None:
+        return None
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def sync_health(archive: Archive, *, now: float | None = None, state_path=None) -> dict:
+    """Freshness of the archive: last sync, lag behind Outlook, watcher state, last drift warning."""
+    from . import watch
+
+    now = time.time() if now is None else now
+    conn = archive.conn
+    last = conn.execute(
+        "SELECT MAX(COALESCE(finished_at, started_at)) FROM sync_runs WHERE status != 'running'").fetchone()[0]
+    newest = next((c["last"] for c in archive.coverage() if c["source"] == "hxstore"), None)
+    new_ts, last_ts = _parse_ts(newest), _parse_ts(last)
+    drift = conn.execute(
+        """SELECT source, status, COALESCE(finished_at, started_at) AS at, message FROM sync_runs
+           WHERE status = 'error' OR message LIKE '%layout changed%' OR message LIKE '%format drift%'
+           ORDER BY id DESC LIMIT 1""").fetchone()
+    return {
+        "last_sync_at": last,
+        "newest_hxstore_message": newest,
+        "lag_vs_now_s": round(now - new_ts) if new_ts is not None else None,
+        "lag_vs_last_sync_s": round(last_ts - new_ts) if new_ts is not None and last_ts is not None else None,
+        "watcher": watch.watcher_status(state_path, now=now),
+        "last_drift_warning": dict(drift) if drift else None,
     }
 
 
@@ -464,8 +527,14 @@ def get_attachment(
 ) -> dict:
     if mode not in ("path", "open", "text"):
         raise ToolInputError("mode must be 'path', 'open' or 'text'")
+    if str(attachment_id).strip().lower().startswith(ORPHAN_PREFIX):
+        return _get_orphan(archive, attachment_id, mode=mode, offset=offset, max_chars=max_chars, opener=opener)
     try:
         att = att_mod.get_row(archive, attachment_id)
+        vis, vparams = privacy.message_visible(archive.conn)
+        if not archive.conn.execute(f"SELECT 1 FROM messages m WHERE m.id = ? AND {vis}",
+                                    (att.message_pk, *vparams)).fetchone():
+            raise att_mod.AttachmentError(f"no attachment with id {attachment_id!r}")
         out = _attachment_summary(archive, att)
         if not out["available_locally"]:
             raise ToolInputError(att_mod.NOT_CACHED)
@@ -487,6 +556,10 @@ def get_attachment(
         out["note"] = (f"No text extraction for {kind} files. The file is at `path`"
                        + (" (images can be viewed by opening that path)." if kind == "image" else "."))
         return out
+    return _page_text(out, text, offset, max_chars)
+
+
+def _page_text(out: dict, text: str, offset: int, max_chars: int) -> dict:
     offset = max(0, int(offset))
     max_chars = max(100, int(max_chars))
     chunk = text[offset: offset + max_chars]
@@ -494,6 +567,151 @@ def get_attachment(
                truncated=offset + len(chunk) < len(text))
     if out["truncated"]:
         out["next_offset"] = offset + len(chunk)
+    return out
+
+
+# ------------------------------------------------------------ orphan files
+
+ORPHAN_PREFIX = "orphan:"
+ORPHAN_NOTE = ("This file is in Outlook's Files/ cache but no message in the archive owns it. "
+               "Its text was copied into the archive when it was indexed.")
+
+
+def _file_iso(ts: int | None) -> str | None:
+    return datetime.fromtimestamp(ts, timezone.utc).isoformat(timespec="seconds") if ts else None
+
+
+def _orphan_on_disk(row: sqlite3.Row) -> bool:
+    return bool(row["exists_now"]) and bool(row["local_path"]) and Path(row["local_path"]).is_file()
+
+
+def _orphan_summary(row: sqlite3.Row) -> dict:
+    out = {
+        "attachment_id": f"{ORPHAN_PREFIX}{row['id']}",
+        "kind": row["kind"],
+        "filename": row["filename"],
+        "content_type": row["content_type"],
+        "size": row["size"],
+        "file_date": _file_iso(row["mtime"]),
+        "source": "files-cache",
+        "available_locally": _orphan_on_disk(row),
+        "has_text": bool(row["text"]),
+    }
+    if row["message_pk"] is not None:
+        out["email_id"] = row["message_pk"]
+    return out
+
+
+def _orphan_row(archive: Archive, attachment_id: int | str) -> sqlite3.Row:
+    s = str(attachment_id).strip()
+    n = s[len(ORPHAN_PREFIX):] if s.lower().startswith(ORPHAN_PREFIX) else s
+    if not n.isdigit() or not archive.has_orphan_table():
+        raise ToolInputError(f"invalid orphan file id {attachment_id!r}; use 'orphan:<number>' from search_files")
+    row = archive.conn.execute("SELECT * FROM orphan_files WHERE id = ?", (int(n),)).fetchone()
+    if row is None:
+        raise ToolInputError(f"no orphan file with id {attachment_id!r}")
+    return row
+
+
+def _get_orphan(archive: Archive, attachment_id, *, mode: str, offset: int, max_chars: int,
+                opener: Callable[[str], None] | None) -> dict:
+    row = _orphan_row(archive, attachment_id)
+    if privacy.orphan_hidden(archive.conn, row):
+        raise ToolInputError(f"no orphan file with id {attachment_id!r}")
+    out = _orphan_summary(row)
+    out["note"] = ORPHAN_NOTE
+    if mode in ("path", "open"):
+        if not out["available_locally"]:
+            raise ToolInputError("The file is no longer in Outlook's Files/ folder. "
+                                 "Only its text is kept: use mode='text'.")
+        out["path"] = row["local_path"]
+        if mode == "open":
+            (opener or _open_url)(row["local_path"])
+            out["opened"] = True
+        return out
+    out["text_kind"] = row["text_kind"]
+    if not row["text"]:
+        out["note"] += (f" No text was extracted ({row['text_kind'] or 'unknown'} file)."
+                        + (" The file is at `path`." if out["available_locally"] else ""))
+        if out["available_locally"]:
+            out["path"] = row["local_path"]
+        return out
+    return _page_text(out, row["text"], offset, max_chars)
+
+
+def search_files(
+    archive: Archive,
+    query: str | None = None,
+    *,
+    kind: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    """Search files in Outlook's Files/ cache that no archived message owns (orphans).
+
+    Dates are the file's modification time. Bodies that were matched back to a message are
+    searchable through search_emails and are not listed here.
+    """
+    if kind not in (None, "attachment", "body"):
+        raise ToolInputError("kind must be 'attachment' or 'body'")
+    limit = _clamp_limit(limit)
+    offset = max(0, int(offset))
+    if not archive.has_orphan_table():
+        return {"total": 0, "offset": offset, "count": 0, "results": [],
+                "note": "No orphan files indexed yet. Run a sync of the hxstore source."}
+    where = ["o.message_pk IS NULL"]
+    params: list[object] = []
+    if kind:
+        where.append("o.kind = ?")
+        params.append(kind)
+    lo, hi = _parse_date(date_from), _parse_date(date_to, end=True)
+    if lo is not None:
+        where.append("o.mtime >= ?")
+        params.append(lo)
+    if hi is not None:
+        where.append("o.mtime <= ?")
+        params.append(hi)
+    query = (query or "").strip()
+    used = None
+    if query:
+        sql = (
+            "WITH hits AS MATERIALIZED ("
+            "  SELECT rowid AS pk, bm25(orphan_fts, 4.0, 1.0) AS score,"
+            "         snippet(orphan_fts, 1, '[', ']', ' … ', 24) AS snip"
+            "  FROM orphan_fts WHERE orphan_fts MATCH ?)"
+            " SELECT o.*, hits.snip FROM hits JOIN orphan_files o ON o.id = hits.pk"
+            " WHERE " + " AND ".join(where) + " ORDER BY hits.score"
+        )
+        try:
+            rows = archive.conn.execute(sql, [query, *params]).fetchall()
+            used = query
+        except sqlite3.OperationalError:
+            used = _fts_fallback(query)
+            if not used:
+                raise ToolInputError("query has no searchable words") from None
+            rows = archive.conn.execute(sql, [used, *params]).fetchall()
+    else:
+        sql = ("SELECT o.*, NULL AS snip FROM orphan_files o WHERE "
+               + " AND ".join(where) + " ORDER BY o.mtime DESC")
+        rows = archive.conn.execute(sql, params).fetchall()
+    # Privacy rules are checked per file (they look at names and text); the orphan set is small.
+    rules = privacy.load_rules()
+    if rules.active:
+        rows = [r for r in rows if not privacy.orphan_hidden(archive.conn, r, rules)]
+    total = len(rows)
+    rows = rows[offset:offset + limit]
+    results = []
+    for r in rows:
+        item = _orphan_summary(r)
+        item["snippet"] = r["snip"] or re.sub(r"\s+", " ", (r["text"] or "")[:240]).strip()
+        results.append(item)
+    out: dict = {"total": total, "offset": offset, "count": len(results), "results": results}
+    if used is not None and used != query:
+        out["note"] = f"query was not valid FTS5 syntax; searched for {used}"
+    if offset + len(results) < total:
+        out["next_offset"] = offset + len(results)
     return out
 
 
@@ -587,6 +805,7 @@ def find_similar(archive: Archive, email_id: str | None = None, *, attachment_id
 
 
 __all__ = [
-    "ToolInputError", "semantic_search", "find_similar", "search_emails", "get_email", "get_thread", "list_recent", "list_folders",
-    "archive_status", "list_attachments", "get_attachment", "build_mailto", "create_draft", "normalize_subject",
+    "ToolInputError", "semantic_search", "find_similar", "search_emails", "get_email", "get_thread", "list_recent",
+    "list_folders", "archive_status", "list_attachments", "get_attachment", "search_files", "build_mailto",
+    "create_draft", "normalize_subject",
 ]

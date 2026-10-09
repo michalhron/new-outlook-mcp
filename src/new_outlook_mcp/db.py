@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import re
 import sqlite3
@@ -95,6 +96,35 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS idx_att_name ON attachments(filename);
 CREATE INDEX IF NOT EXISTS idx_att_pk ON attachments(message_pk);
+
+-- Files in Outlook's Files/ cache that no HxStore record points to (attachment files and
+-- EFMData bodies of messages that left the cache). Not tied to a message, so kept apart from
+-- `attachments`. Text is copied here because Outlook may delete the file later. `rel_path` is
+-- relative to the profile folder. `message_pk` is set when a body was matched back to a message.
+CREATE TABLE IF NOT EXISTS orphan_files (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    rel_path TEXT NOT NULL UNIQUE,
+    local_path TEXT,
+    filename TEXT,
+    content_type TEXT,
+    size INTEGER,
+    mtime INTEGER,
+    sha256 TEXT,
+    text TEXT,
+    text_kind TEXT,
+    message_pk INTEGER REFERENCES messages(id) ON DELETE SET NULL,
+    link_method TEXT,
+    exists_now INTEGER NOT NULL DEFAULT 1,
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_orphan_mtime ON orphan_files(mtime);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS orphan_fts USING fts5(
+    filename, body,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
 
 CREATE TABLE IF NOT EXISTS sync_runs (
     id INTEGER PRIMARY KEY,
@@ -250,6 +280,15 @@ def normalize_subject(subject: str | None) -> str:
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+def _register_functions(conn: sqlite3.Connection) -> None:
+    """SQL helpers for privacy rules: SQLite's own lower() and LIKE fold only ASCII."""
+    conn.create_function("nol_casefold", 1, lambda v: v.casefold() if isinstance(v, str) else "", deterministic=True)
+    conn.create_function(
+        "nol_fnmatch", 2,
+        lambda name, pat: int(isinstance(name, str) and fnmatch.fnmatchcase(name.casefold(), pat)),
+        deterministic=True)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -272,6 +311,7 @@ class Archive:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        _register_functions(self.conn)
         self.conn.execute("PRAGMA foreign_keys = ON")
         if not readonly:
             self.conn.execute("PRAGMA journal_mode = WAL")
@@ -438,6 +478,16 @@ class Archive:
             (pk, row["subject"] or "", sender, recipients, row["body_text"] or ""),
         )
 
+    def upgrade_body(self, pk: int, html: str, text: str) -> bool:
+        """Replace a preview-only body with a full one. Messages that already have an HTML body are left alone."""
+        row = self.conn.execute("SELECT body_html FROM messages WHERE id = ?", (pk,)).fetchone()
+        if row is None or row["body_html"]:
+            return False
+        self.conn.execute("UPDATE messages SET body_html = ?, body_text = ?, updated_at = ? WHERE id = ?",
+                          (html, text, _now(), pk))
+        self._reindex(pk)
+        return True
+
     # ------------------------------------------------------------- sync runs
 
     def start_run(self, source: str, snapshot_dir: str | None = None) -> int:
@@ -468,30 +518,48 @@ class Archive:
             return None
         return zlib.decompress(row[0])
 
-    def counts(self) -> dict[str, int]:
-        q = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
-        return {
-            "messages": q("SELECT COUNT(*) FROM messages"),
+    def has_orphan_table(self) -> bool:
+        """False for an archive written before orphan files existed and opened read-only."""
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'orphan_files'").fetchone() is not None
+
+    def counts(self, *, message_filter: tuple[str, list] | None = None,
+               event_filter: tuple[str, list] | None = None) -> dict[str, int]:
+        """Row counts. The filters are SQL predicates on `m` (messages) and `e` (events), see privacy.py."""
+        mf, mp = message_filter or ("1", [])
+        ef, ep = event_filter or ("1", [])
+        q = lambda sql, params=(): self.conn.execute(sql, params).fetchone()[0]  # noqa: E731
+        out = {
+            "messages": q(f"SELECT COUNT(*) FROM messages m WHERE {mf}", mp),
             "folders": q("SELECT COUNT(*) FROM folders"),
             "accounts": q("SELECT COUNT(*) FROM accounts"),
-            "attachments": q("SELECT COUNT(*) FROM attachments"),
-            "events": q("SELECT COUNT(*) FROM events"),
-            "event_instances": q("SELECT COUNT(*) FROM event_instances"),
+            "attachments": q("SELECT COUNT(*) FROM attachments a JOIN messages m ON m.id = a.message_pk"
+                             f" WHERE {mf}", mp),
+            "events": q(f"SELECT COUNT(*) FROM events e WHERE {ef}", ep),
+            "event_instances": q("SELECT COUNT(*) FROM event_instances i JOIN events e ON e.id = i.event_pk"
+                                 f" WHERE {ef}", ep),
+            "orphan_files": q("SELECT COUNT(*) FROM orphan_files o LEFT JOIN messages m ON m.id = o.message_pk"
+                              f" WHERE o.message_pk IS NULL OR ({mf})", mp) if self.has_orphan_table() else 0,
         }
+        return out
 
-    def coverage(self) -> list[dict]:
+    def coverage(self, message_filter: tuple[str, list] | None = None) -> list[dict]:
+        mf, mp = message_filter or ("1", [])
         rows = self.conn.execute(
-            """SELECT s.source, COUNT(*) AS n, MIN(m.date_utc) AS first, MAX(m.date_utc) AS last
+            f"""SELECT s.source, COUNT(*) AS n, MIN(m.date_utc) AS first, MAX(m.date_utc) AS last
                FROM message_sources s JOIN messages m ON m.id = s.message_pk
-               GROUP BY s.source ORDER BY s.source"""
+               WHERE {mf}
+               GROUP BY s.source ORDER BY s.source""", mp
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def calendar_coverage(self) -> list[dict]:
+    def calendar_coverage(self, event_filter: tuple[str, list] | None = None) -> list[dict]:
+        ef, ep = event_filter or ("1", [])
         rows = self.conn.execute(
-            """SELECT s.source, COUNT(*) AS n, MIN(e.start_utc) AS first, MAX(e.start_utc) AS last
+            f"""SELECT s.source, COUNT(*) AS n, MIN(e.start_utc) AS first, MAX(e.start_utc) AS last
                FROM event_sources s JOIN events e ON e.id = s.event_pk
-               GROUP BY s.source ORDER BY s.source"""
+               WHERE {ef}
+               GROUP BY s.source ORDER BY s.source""", ep
         ).fetchall()
         return [dict(r) for r in rows]
 

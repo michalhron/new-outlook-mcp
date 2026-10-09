@@ -59,5 +59,7 @@ def test_labels_keep_well_known_and_hide_others():
     assert lab.folder("Inbox") == "Inbox"
     assert lab.folder("Inbox/Secret project") == "Inbox/folder #1"
     assert lab.folder("Personal") == "folder #2"
+    assert lab.folder("On My Computer/Course A") == "On My Computer/folder #3"
+    assert lab.folder("Other store 2") == "Other store 2"
     assert lab.account("someone@example.org") == "account A"
     assert validate.sanitize("error at /x/someone@example.org") == "error at /x/<address>"

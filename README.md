@@ -1,4 +1,4 @@
-# new-outlook-mcp
+<p align="center"><img src="docs/assets/banner.svg" alt="new-outlook-mcp: Claude reads your Outlook mail and calendar from the files already on your Mac" width="100%"></p>
 
 A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API.
 
@@ -14,29 +14,26 @@ Outlook still keeps a lot on disk: the frozen archive of the legacy client, New 
 
 ## What you get
 
-- One archive of all your Outlook mail on this Mac: the legacy client's history and New Outlook's cache, deduplicated, kept even after Outlook drops it.
-- Keyword search and, optionally, [search by meaning](docs/semantic-search.md) in about 100 languages.
-- Attachment text from PDF, Word and Excel files, including files whose messages left Outlook's cache.
-- Calendar with recurring events, free time and meeting preparation.
-- Near-live updates about a minute after Outlook syncs.
-- Privacy scopes that keep grades, hiring or HR mail out of everything.
-- Drafts only. You send every message yourself.
+<table>
+<tr><td width="50%" valign="top"><img src="docs/assets/icon-archive.svg" width="48" height="48" alt="" align="left"><b>One archive</b><br>Legacy history and New Outlook's cache in one place, deduplicated. Mail stays after Outlook drops it.</td><td width="50%" valign="top"><img src="docs/assets/icon-keyword.svg" width="48" height="48" alt="" align="left"><b>Keyword search</b><br>Words, phrases, prefixes and filters by sender, folder, account and date.</td></tr>
+<tr><td width="50%" valign="top"><img src="docs/assets/icon-meaning.svg" width="48" height="48" alt="" align="left"><b>Search by meaning</b><br>Describe what you remember, in any of about 100 languages. <a href="docs/semantic-search.md">How it works</a>.</td><td width="50%" valign="top"><img src="docs/assets/icon-attachment.svg" width="48" height="48" alt="" align="left"><b>Attachment text</b><br>PDF, Word and Excel text, also from files whose messages left Outlook's cache.</td></tr>
+<tr><td width="50%" valign="top"><img src="docs/assets/icon-calendar.svg" width="48" height="48" alt="" align="left"><b>Calendar</b><br>Recurring events, free time, and meeting preparation with the related mail.</td><td width="50%" valign="top"><img src="docs/assets/icon-sync.svg" width="48" height="48" alt="" align="left"><b>Near-live</b><br>A watcher syncs about a minute after Outlook updates its cache.</td></tr>
+<tr><td width="50%" valign="top"><img src="docs/assets/icon-privacy.svg" width="48" height="48" alt="" align="left"><b>Privacy scopes</b><br>Rules keep grades, hiring or HR mail out of the archive and every tool.</td><td width="50%" valign="top"><img src="docs/assets/icon-draft.svg" width="48" height="48" alt="" align="left"><b>Drafts only</b><br>Claude prepares a draft. You review it and press send.</td></tr>
+</table>
 
 ## How it works
 
-```
- Outlook's files (never written)          this project
- ────────────────────────────────         ──────────────────────────────────────────────────
- Data/Outlook.sqlite + .olk15*  ──┐
- HxStore.hxd + hxcore.hfl       ──┼─► snapshot copy ─► importers ─► archive.db ─► MCP tools ─► Claude
- Files/ (attachments, bodies)   ──┤   (private dir)    legacy        SQLite + FTS5     CLI
- published ICS feed (optional)  ──┘                    hxstore       [+ vectors]
-                                                       ics
- watcher (FSEvents) ─► debounce ─► sync ─────────────────┘
- 36 h LaunchAgent (fallback) ─► sync
-```
+<p align="center"><img src="docs/assets/flow.svg" alt="Outlook's files are copied to a snapshot, imported into archive.db and served read-only to Claude. Microsoft servers are not contacted." width="100%"></p>
 
 Every sync copies Outlook's database files to a private folder and parses the copy. Nothing ever writes to Outlook's folders. The only network requests are the ICS links you add and the one-time model download for search by meaning.
+
+## Search by meaning
+
+<p align="center"><img src="docs/assets/semantic.svg" alt="Three steps: the question lands near passages with the same meaning, meaning and keywords rank messages separately, and the two rankings fuse into one list." width="100%"></p>
+
+Keyword search needs the words that are in the message. Search by meaning needs only a description. Ask for "the email where someone suggested reframing the hype paper" and it can find a message that never uses the word reframing. A question in English finds Czech, Danish, Dutch or Finnish mail.
+
+It runs on your Mac with a local model and adds two tools, `semantic_search` and `find_similar`, plus a `hybrid` mode for `search_emails`. Hybrid search ranks by meaning and by keywords and merges the two lists, so exact names and paraphrases both come up. Each result shows the passage that matched, whether in the body, the subject or an attachment. Setup is one command, `new-outlook embed --download`. Details in [docs/semantic-search.md](docs/semantic-search.md).
 
 ## Quick start
 

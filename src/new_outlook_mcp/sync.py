@@ -82,6 +82,12 @@ def run_import(
         res.seen = importer.stats.seen
         res.skipped = importer.stats.skipped
 
+        try:
+            importer.finish_files(archive)
+        except Exception as exc:  # the Files/ index is an extra: it must not fail the mail import
+            log.warning("%s: indexing Files/ failed: %s", name, exc)
+            importer.stats.warnings.append(f"indexing the Files/ cache failed: {type(exc).__name__}")
+
         seen_events: set[str] = set()
         for ev in importer.iter_events(snap):
             res.events_seen += 1
@@ -137,10 +143,11 @@ def sync(
     sources: list[str],
     *,
     source_paths: dict[str, Path] | None = None,
+    source_options: dict[str, dict] | None = None,
     **kwargs,
 ) -> list[SyncResult]:
     results = []
     for name in sources:
-        importer = make_importer(name, (source_paths or {}).get(name))
+        importer = make_importer(name, (source_paths or {}).get(name), **(source_options or {}).get(name, {}))
         results.append(run_import(archive, importer, **kwargs))
     return results

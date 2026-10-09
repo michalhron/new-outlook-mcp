@@ -16,7 +16,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-from .. import mime
+from .. import mime, orphans
 from ..calendar_store import AttendeeInfo, EventRecord
 from ..ics import find_meeting_url
 from ..model import AttachmentInfo, MessageRecord, first_plausible
@@ -51,8 +51,14 @@ class HxStoreImporter(Importer):
     expect_events = True
     incremental = False  # a live cache: re-read so folder moves and new downloads are picked up
 
-    def __init__(self, source_path: Path, *, profile_dir: Path | None = None):
+    def __init__(self, source_path: Path, *, profile_dir: Path | None = None, index_orphans: bool = True,
+                 include_small_images: bool = False):
         super().__init__(source_path)
+        #: Index files in Files/ that no record references (see orphans.py).
+        self.index_orphans = index_orphans
+        self.include_small_images = include_small_images
+        #: Resolved paths of files that a message or attachment record points to.
+        self.linked_files: set[str] = set()
         # "~" in HxStore file references means the profile folder that holds HxStore.hxd.
         self.profile_dir = Path(profile_dir) if profile_dir else self.source_path.parent
         self._store: hxformat.Store | None = None
@@ -162,6 +168,10 @@ class HxStoreImporter(Importer):
         rec.account = m.account
         rec.in_reply_to = m.in_reply_to
         html = m.body_html
+        if m.body_file_ref:
+            body_path = self.resolve_ref(m.body_file_ref)
+            if body_path is not None:
+                self.linked_files.add(str(body_path))
         if not html and m.body_file_ref:
             html = self._body_from_file(m.body_file_ref)
             if html is None:
@@ -175,6 +185,8 @@ class HxStoreImporter(Importer):
         rec.has_attachment = m.has_attachment
         for a in m.attachments:
             path = self.resolve_ref(a.file_ref)
+            if path is not None:
+                self.linked_files.add(str(path))
             cached = path is not None and path.is_file()
             rec.attachments.append(AttachmentInfo(
                 filename=a.name, content_type=a.content_type, size=a.size, content_id=a.content_id,
@@ -186,6 +198,24 @@ class HxStoreImporter(Importer):
         if any(not a.is_inline for a in rec.attachments):
             rec.has_attachment = True
         return rec
+
+    # --------------------------------------------------------------- files
+
+    def finish_files(self, archive) -> dict | None:
+        """Index orphan files in Files/ once all messages are stored (their ids and bodies are needed)."""
+        if not self.index_orphans:
+            return None
+        counts = orphans.index_files(archive, self.profile_dir, self.linked_files,
+                                     include_small_images=self.include_small_images)
+        if counts is None:
+            return None
+        self.details["files"] = counts
+        for key, label in (("attachment_orphans", "orphan attachment files"), ("body_orphans", "orphan body files"),
+                           ("body_linked_back", "orphan bodies matched to messages"),
+                           ("bodies_upgraded", "preview-only messages upgraded from orphan bodies")):
+            if counts.get(key):
+                self.stats.count(label, counts[key])
+        return counts
 
     # ------------------------------------------------------------ calendar
 

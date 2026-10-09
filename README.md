@@ -106,7 +106,9 @@ For Claude Desktop, add to `claude_desktop_config.json`:
 
 | Tool | What it does |
 |---|---|
-| `search_emails` | Full-text query (FTS5 syntax: words, `"phrases"`, `OR`, `NOT`, `prefix*`) plus filters `sender`, `recipient`, `folder`, `account`, `date_from`, `date_to`, `has_attachment`, `attachment_name`. Paged with `limit`/`offset`. |
+| `search_emails` | Full-text query (FTS5 syntax: words, `"phrases"`, `OR`, `NOT`, `prefix*`) plus filters `sender`, `recipient`, `folder`, `account`, `date_from`, `date_to`, `has_attachment`, `attachment_name`. Paged with `limit`/`offset`. `mode` is `keyword` (default), `semantic` or `hybrid`, see [Search by meaning](#search-by-meaning). |
+| `semantic_search` | Find mail and attachments by meaning, in English, Czech, Danish, Dutch, Finnish and many other languages, with the same filters. Each result is one email whose `snippet` is the best matching passage. |
+| `find_similar` | Emails similar to a given email or attachment. |
 | `get_email` | Metadata, attachment list and plain-text body. Long bodies are paged with `offset`. |
 | `get_thread` | The conversation around a message, via Message-ID/References/In-Reply-To, Outlook's conversation id, and a subject fallback. |
 | `list_recent` | Newest messages, optionally by folder, account or last N days. |
@@ -154,6 +156,30 @@ When sources disagree, HxStore wins over the ICS feed, and both win over the fro
 ### Not possible without a server API
 
 These need Exchange or Graph and are out of scope: accepting or declining invitations, editing or deleting events, the room finder, other people's free/busy, out-of-office settings, and sending mail.
+
+## Search by meaning
+
+Ask for mail the way you remember it ("the email where someone suggested reframing the hype paper") and find it without matching keywords. It is optional and off until you set it up.
+
+Install the extra and embed the archive:
+
+```sh
+pipx install 'new-outlook-mcp[semantic]'
+# or add it to an existing install:
+pipx inject new-outlook-mcp sentence-transformers sqlite-vec numpy
+
+new-outlook embed --download
+```
+
+`embed --download` fetches the model weights from Hugging Face once. That is the only network access, it happens only when you pass `--download`, and none of your mail is sent anywhere. Embeddings are computed on this Mac (Apple GPU through MPS when available, else CPU). Syncing and the MCP server never download anything.
+
+- Model. `intfloat/multilingual-e5-small`: 384 dimensions, about 118M parameters, a download of about 470 MB, trained on about 100 languages including English, Czech, Danish, Dutch and Finnish, and fast on Apple Silicon. A query in one language also finds mail in another. `BAAI/bge-m3` (1024 dimensions, about 2.3 GB) is stronger on long and cross-language text but slower and larger. Pick it with `new-outlook embed --model BAAI/bge-m3`. One archive uses one model. Switch with `new-outlook embed --reembed --model NAME`, which deletes the old vectors first.
+- Time and disk. Plan on roughly 10 to 30 minutes per 10,000 messages with the small model, and about 2 KB of database per chunk (a message has a few chunks). A mailbox of 50,000 messages adds a few hundred MB. These are estimates until measured on a real archive.
+- Resumable. `embed` commits after every batch and prints done/total, rate and ETA. Press Ctrl-C at any time and run it again to continue. Newest mail is embedded first. Useful options: `--limit N`, `--batch 32`, `--status`.
+- Incremental. Once `embed` has run, every `sync` embeds the new mail (at most 2,000 messages per sync, the rest waits for the next `embed`). A sync never downloads a model.
+- What is embedded. The subject, the body without quoted replies and signatures (reply headers, "wrote:" lines and sign-offs are recognized in English, Czech, German, French, Spanish, Italian, Danish, Dutch and Finnish), and the text of PDF, Word, Excel and text attachments that are stored on this Mac.
+- Search. `semantic_search` and `search_emails mode=hybrid` fuse the keyword ranking and the meaning ranking with Reciprocal Rank Fusion. Results are grouped by email, show the best matching passage as the snippet, and say whether the subject, body or an attachment matched. `search_emails` stays keyword-only unless you ask for another mode. From a terminal: `new-outlook search --mode hybrid "reviewer comments about construct validity"`.
+- Storage. Vectors live in the same SQLite file, in a `sqlite-vec` table when the extension can load, else as blobs searched with numpy. If the extra is missing, the tools say how to install it and `hybrid` falls back to keyword results.
 
 ## Scheduled sync (launchd)
 

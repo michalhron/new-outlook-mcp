@@ -35,6 +35,7 @@ class SyncResult:
     details: dict = field(default_factory=dict)
     message: str = ""
     snapshot_dir: str | None = None
+    embedded: int = 0
 
     @property
     def needs_attention(self) -> bool:
@@ -158,11 +159,26 @@ def sync(
     sources: list[str],
     *,
     source_paths: dict[str, Path] | None = None,
+    embed: bool = True,
     source_options: dict[str, dict] | None = None,
     **kwargs,
 ) -> list[SyncResult]:
     results = []
     for name in sources:
         importer = make_importer(name, (source_paths or {}).get(name), **(source_options or {}).get(name, {}))
-        results.append(run_import(archive, importer, **kwargs))
+        res = run_import(archive, importer, **kwargs)
+        if embed and res.inserted:
+            _embed_new_mail(archive, res)
+        results.append(res)
     return results
+
+
+def _embed_new_mail(archive: Archive, res: SyncResult) -> None:
+    """Embed new mail when search by meaning was set up before. Never downloads a model."""
+    from . import semantic
+
+    try:
+        res.embedded = semantic.embed_after_sync(archive)
+    except Exception as exc:  # embedding must never fail a sync
+        log.warning("embedding new mail failed: %s", exc)
+        res.message = "; ".join(filter(None, [res.message, f"embedding new mail failed: {exc}"]))

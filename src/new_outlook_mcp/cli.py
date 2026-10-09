@@ -1,4 +1,4 @@
-"""Command line: new-outlook sync | watch | snapshot | backup-legacy | status | privacy | purge-excluded | launchd | serve."""
+"""Command line: new-outlook sync | watch | embed | search | snapshot | backup-legacy | status | privacy | purge-excluded | launchd | serve."""
 
 from __future__ import annotations
 
@@ -368,6 +368,92 @@ def cmd_experiment(args) -> int:
         return 2
 
 
+def _fmt_eta(seconds: float | None) -> str:
+    if seconds is None:
+        return "?"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
+
+
+def cmd_embed(args) -> int:
+    from . import embedder as emb
+    from . import semantic
+
+    if not emb.semantic_installed():
+        print(emb.MISSING_EXTRA, file=sys.stderr)
+        return 2
+    if not Path(args.db).exists():
+        print(f"no archive yet at {args.db}. Run `new-outlook sync` first.")
+        return 1
+    with Archive(args.db) as archive:
+        state = semantic.index_state(archive)
+        if args.status:
+            st = semantic.status(archive)
+            print(f"model: {st.get('model', '(none yet)')}  dim: {st.get('dim', '-')}  store: {st.get('backend', '-')}")
+            print(f"messages embedded: {st['messages_embedded']} of {st['messages']}  chunks: {st['chunks']}")
+            return 0
+        model = args.model or (state or {}).get("model") or emb.DEFAULT_MODEL
+        if args.reembed:
+            semantic.reset_index(archive)
+            state = None
+            print("cleared all embeddings")
+        elif state and args.model and args.model != state["model"]:
+            print(f"This archive is embedded with {state['model']}. Use --reembed to switch to {args.model}.",
+                  file=sys.stderr)
+            return 2
+        if args.download and not emb.fake_requested():
+            spec = emb.MODELS.get(model, emb.ModelSpec())
+            print(f"downloading {model} from huggingface.co once ({spec.approx_download}). "
+                  "Your mail is not sent anywhere.")
+        try:
+            embedder = emb.get_embedder(model, allow_download=args.download)
+        except emb.SemanticUnavailable as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        pending = semantic.pending_count(archive)
+        print(f"model {embedder.name} ({embedder.dim} dims), {pending} messages to embed")
+
+        def progress(done: int, total: int, rate: float, eta: float | None) -> None:
+            print(f"  {done}/{total} messages  {rate:.1f}/s  ETA {_fmt_eta(eta)}", flush=True)
+
+        try:
+            res = semantic.backfill(archive, embedder, limit=args.limit, batch=args.batch, progress=progress)
+        except semantic.SemanticUnavailable as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        print(f"embedded {res.messages} messages ({res.chunks} chunks) in {_fmt_eta(res.seconds)}; "
+              f"{res.remaining} still pending" + ("; interrupted, run again to resume" if res.interrupted else ""))
+    return 130 if res.interrupted else 0
+
+
+def cmd_search(args) -> int:
+    from . import tools
+
+    if not Path(args.db).exists():
+        print(f"no archive yet at {args.db}. Run `new-outlook sync` first.")
+        return 1
+    with Archive(args.db) as archive:
+        try:
+            res = tools.search_emails(archive, args.query, from_=args.sender, folder=args.folder,
+                                      date_from=args.date_from, date_to=args.date_to, limit=args.limit,
+                                      mode=args.mode)
+        except tools.ToolInputError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if args.json:
+        print(json.dumps(res, indent=2, default=str))
+        return 0
+    if res.get("note"):
+        print(f"note: {res['note']}")
+    for r in res["results"]:
+        how = f" [{r['matched']}]" if "matched" in r else ""
+        print(f"{r['id']:>7}  {(r['date'] or '')[:10]}  {r['from'][:30]:30}  {r['subject'][:60]}{how}")
+        print(f"         {r['snippet'][:160]}")
+    print(f"{res['count']} of {res['total']} results")
+    return 0
+
+
 def cmd_serve(args) -> int:
     from .server import build_server
 
@@ -474,6 +560,27 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--hxstore", type=Path, help="path to HxStore.hxd (default: Outlook's own)")
     s.add_argument("--marker", action="append", help="probe marker; strings containing it are printed (default HXPROBE)")
     s.set_defaults(func=cmd_experiment)
+
+    s = sub.add_parser("embed", help="set up and update search by meaning (local embeddings, resumable)")
+    s.add_argument("--model", help="embedding model (default intfloat/multilingual-e5-small)")
+    s.add_argument("--download", action="store_true",
+                   help="allow downloading the model weights from Hugging Face (one time)")
+    s.add_argument("--limit", type=int, help="embed at most this many messages in this run")
+    s.add_argument("--batch", type=int, default=32, help="messages per committed batch (default 32)")
+    s.add_argument("--reembed", action="store_true", help="delete all embeddings first, to switch model")
+    s.add_argument("--status", action="store_true", help="show what is embedded and exit")
+    s.set_defaults(func=cmd_embed)
+
+    s = sub.add_parser("search", help="search the archive from the terminal")
+    s.add_argument("query")
+    s.add_argument("--mode", choices=["keyword", "semantic", "hybrid"], default="keyword")
+    s.add_argument("--sender")
+    s.add_argument("--folder")
+    s.add_argument("--date-from")
+    s.add_argument("--date-to")
+    s.add_argument("--limit", type=int, default=10)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_search)
 
     s = sub.add_parser("serve", help="run the MCP server on stdio")
     s.set_defaults(func=cmd_serve)

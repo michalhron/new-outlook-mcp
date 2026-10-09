@@ -15,6 +15,8 @@ Nothing here logs or reports what matched a rule, only how many.
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Callable, Iterable
+from typing import Any
 import re
 import shutil
 import sqlite3
@@ -454,3 +456,39 @@ __all__ = [
     "message_hidden", "message_visible", "event_hidden", "event_visible", "hidden_folder_ids", "hidden_account_ids", "count_hidden",
     "status", "purge",
 ]
+
+
+# ------------------------------------------------- id filter for result paths
+
+IdFilter = Callable[[Any, list[int]], Iterable[int]]
+
+
+def rules_filter(archive, ids: list[int]) -> Iterable[int]:
+    """Drop message ids hidden by the configured rules."""
+    rules = load_rules()
+    if not rules.active or not ids:
+        return ids
+    sql, params = _hidden_message_sql(archive.conn, rules, "m")
+    if sql == "0":
+        return ids
+    hidden: set[int] = set()
+    for chunk in _chunks(list(ids)):
+        hidden |= {r[0] for r in archive.conn.execute(
+            f"SELECT m.id FROM messages m WHERE m.id IN ({_marks(len(chunk))}) AND ({sql})", [*chunk, *params])}
+    return [i for i in ids if i not in hidden]
+
+
+_filter: IdFilter = rules_filter
+
+
+def set_filter(fn: IdFilter | None) -> None:
+    """Replace the id filter (tests), or restore the rule-based one with None."""
+    global _filter
+    _filter = fn or rules_filter
+
+
+def filter_allowed_message_ids(archive, ids: Iterable[int]) -> list[int]:
+    """The ids the caller may see, in input order. Used by every semantic result path."""
+    ids = list(ids)
+    allowed = set(_filter(archive, ids))
+    return [i for i in ids if i in allowed]

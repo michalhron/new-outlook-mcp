@@ -59,7 +59,7 @@ class ObjSpec:
     tail_after: int | None = None
 
     def build(self) -> bytes:
-        fs = self.fs or hx.EXPECTED_FS.get(self.cls, 0x400)
+        fs = self.fs or hx.FS_16_114.get(self.cls, 0x400)
         fixed = bytearray(fs)
         area1 = bytearray(self.area_one_raw)
         for rel, s in self.area_one_strings.items():
@@ -133,8 +133,16 @@ CALENDAR = 0x3001
 ME = "me@uni.example.edu"
 
 
-def mailbox(profile: Path, *, with_files: bool = True) -> list[ObjSpec]:
-    """Three messages, two attachments, three events. Files/ entries are created when with_files."""
+def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = hx.FS_16_114) -> list[ObjSpec]:
+    """Three messages, two attachments, three events. Files/ entries are created when with_files.
+
+    `sizes` picks the Outlook build's layout (hx.FS_16_113 or hx.FS_16_114).
+    """
+
+    def at(cls: int, field: str) -> int:
+        return hx.FIELDS[(cls, sizes[cls])][field]
+
+    acct_fs, folder_fs, body_fs = sizes[hx.C_ACCOUNT], sizes[hx.C_FOLDER], sizes[hx.C_BODY]
     att_ref = "~/Files/S0/3/Attachments/0/agenda[1].pdf"
     missing_ref = "~/Files/S0/3/Attachments/0/slides[2].pptx"
     body_ref = "~/Files/S0/3/EFMData/7.dat"
@@ -165,15 +173,18 @@ def mailbox(profile: Path, *, with_files: bool = True) -> list[ObjSpec]:
         return ObjSpec(hx.C_RECIPIENT, oid, owner=owner, kind=kind, strings={0x124: name, 0x12C: addr})
 
     objs = [
-        ObjSpec(hx.C_ACCOUNT, ACCOUNT, strings={0x156C: ME}),
+        ObjSpec(hx.C_ACCOUNT, ACCOUNT, fs=acct_fs, strings={at(hx.C_ACCOUNT, "smtp"): ME}),
         ObjSpec(hx.C_MAIL_ACCOUNT, MAIL_ACCOUNT, owner=ACCOUNT, u64s={0x44: ACCOUNT}),
-        ObjSpec(hx.C_FOLDER, INBOX, owner=MAIL_ACCOUNT, strings={0x434: "Inbox"}, u32s={0x47C: 0x61}),
-        ObjSpec(hx.C_FOLDER, SENT, owner=MAIL_ACCOUNT, strings={0x434: "Sent Items"}, u32s={0x47C: 0x65}),
+        ObjSpec(hx.C_FOLDER, INBOX, owner=MAIL_ACCOUNT, fs=folder_fs, strings={at(hx.C_FOLDER, "name"): "Inbox"},
+                u32s={at(hx.C_FOLDER, "type"): 0x61}),
+        ObjSpec(hx.C_FOLDER, SENT, owner=MAIL_ACCOUNT, fs=folder_fs, strings={at(hx.C_FOLDER, "name"): "Sent Items"},
+                u32s={at(hx.C_FOLDER, "type"): 0x65}),
         # m1: inbox message with a cached PDF, an inline logo, and a missing attachment.
         msg(0x5001, subject="Workshop agenda", frm=("Hana Synth", "hana@example.org"), mid="<hx-1@example.org>",
             sent=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc),
             received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True),
-        ObjSpec(hx.C_BODY, 0x5001, blobs={0x678: b"<html><body><p>Agenda attached. Coffee at ten.</p></body></html>"}),
+        ObjSpec(hx.C_BODY, 0x5001, fs=body_fs,
+                blobs={at(hx.C_BODY, "html"): b"<html><body><p>Agenda attached. Coffee at ten.</p></body></html>"}),
         rcpt(0x6001, 0x5001, 0xCC, "Me", ME),
         rcpt(0x6002, 0x5001, 0xCD, "Ivan Synth", "ivan@example.net"),
         rcpt(0x6003, 0x5001, 0x19D, "Hana Synth", "hana@example.org"),  # reply-to, not a recipient
@@ -191,7 +202,7 @@ def mailbox(profile: Path, *, with_files: bool = True) -> list[ObjSpec]:
         msg(0x5002, subject="RE: Workshop agenda", frm=("Me", ME), mid="<hx-2@uni.example.edu>",
             irt="<hx-1@example.org>", sent=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc),
             received=datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc), folder=SENT),
-        ObjSpec(hx.C_BODY, 0x5002, refs={0x2B2: (hx.C_FILE, 0x8001)}),
+        ObjSpec(hx.C_BODY, 0x5002, fs=body_fs, refs={at(hx.C_BODY, "file"): (hx.C_FILE, 0x8001)}),
         ObjSpec(hx.C_FILE, 0x8001, strings={0x88: body_ref}),
         rcpt(0x6004, 0x5002, 0xCC, "Hana Synth", "hana@example.org"),
         # m3: only a preview (body not cached), two copies: the newer one has the moved folder.

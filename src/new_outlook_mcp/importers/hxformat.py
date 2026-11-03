@@ -1,6 +1,6 @@
 """Decoder for New Outlook's HxStore.hxd ("Nostromo" container, version 'i').
 
-Measured on New Outlook for Mac 16.113.4. See docs/hxstore-notes.md for the
+Measured on New Outlook for Mac 16.113.4 and 16.114.3. See docs/hxstore-notes.md for the
 full description, confidence levels and open questions. Stdlib only.
 
 Container: 4 KiB file header, then blocks on 512-byte boundaries. A block is a
@@ -39,7 +39,7 @@ TICKS_UNIX0 = 621355968000000000
 TICKS_MAX = 0x2BCA2875F4373FFF  # DateTime.MaxValue: "unset"
 MAX_BLOCK = 64 << 20
 
-# Classes and their fixed-region sizes on 16.113.4. A different size means a different layout.
+# Classes and their fixed-region sizes per Outlook build. A size not listed means an unverified layout.
 C_ACCOUNT = 0x49
 C_MAIL_ACCOUNT = 0x4A
 C_FOLDER = 0x4D
@@ -52,9 +52,21 @@ C_BODY = 0xCA
 C_FILE = 0xF7
 C_ATTACHMENT = 0x16A
 
-EXPECTED_FS = {
+FS_16_113 = {
     C_ACCOUNT: 0x1992, C_MAIL_ACCOUNT: 0x6CA, C_FOLDER: 0x4C2, C_RECIPIENT: 0x15E, C_EVENT: 0x455,
     C_EVENT_DETAIL: 0x348, C_MESSAGE: 0x60F, C_BODY: 0x740, C_FILE: 0xC5, C_ATTACHMENT: 0x318,
+}
+FS_16_114 = FS_16_113 | {C_ACCOUNT: 0x19D0, C_FOLDER: 0x4D8, C_BODY: 0x74E}
+EXPECTED_FS = {c: tuple(sorted({FS_16_113[c], FS_16_114[c]})) for c in FS_16_113}
+
+# Field offsets that differ between those sizes, keyed by (class, fs). The other offsets did not move.
+FIELDS = {
+    (C_ACCOUNT, 0x1992): {"smtp": 0x156C},
+    (C_ACCOUNT, 0x19D0): {"smtp": 0x159C},
+    (C_FOLDER, 0x4C2): {"name": 0x434, "type": 0x47C},
+    (C_FOLDER, 0x4D8): {"name": 0x448, "type": 0x490},
+    (C_BODY, 0x740): {"html": 0x678, "file": 0x2B2},
+    (C_BODY, 0x74E): {"html": 0x684, "file": 0x2BA},
 }
 
 RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0x19D: "reply_to"}
@@ -64,6 +76,10 @@ ATTENDEE_RESPONSE = {0: "accepted", 1: "tentative", 2: "declined", 4: "none"}
 SHOW_AS = {0: "free", 1: "tentative", 2: "busy", 3: "oof"}
 EVENT_TYPE = {0: "single", 1: "occurrence", 2: "exception", 3: "master"}
 DAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"]
+
+
+def expected_sizes(cls: int) -> str:
+    return " or ".join(f"{fs:#x}" for fs in EXPECTED_FS[cls])
 
 
 class HxStoreFormatError(RuntimeError):
@@ -80,7 +96,7 @@ class HxStoreLayoutError(HxStoreFormatError):
     def __init__(self, mismatches: dict[tuple[int, int], int]):
         self.mismatches = dict(mismatches)
         parts = ", ".join(
-            f"class {c:#x}: size {fs:#x} x{n} (expected {EXPECTED_FS[c]:#x})"
+            f"class {c:#x}: size {fs:#x} x{n} (expected {expected_sizes(c)})"
             for (c, fs), n in sorted(self.mismatches.items())
         )
         super().__init__(f"HxStore layout changed, refusing to import ({parts}). "
@@ -228,6 +244,10 @@ class Obj:
     raw: bytes
     block: int
 
+    def at(self, field: str) -> int:
+        """Offset of a field whose place depends on the layout (see FIELDS)."""
+        return FIELDS[(self.cls, self.fs)][field]
+
     def u32(self, rel: int) -> int:
         return struct.unpack_from("<I", self.raw, rel)[0]
 
@@ -295,7 +315,7 @@ def iter_objects(d, block_stats: BlockStats, classes: set[int] | None, obj_stats
             if fs + lead > length:
                 continue
             want = EXPECTED_FS.get(cls)
-            if want is not None and fs != want:
+            if want is not None and fs not in want:
                 obj_stats.layout_mismatch[(cls, fs)] += 1
                 if check_layout:
                     continue
@@ -400,7 +420,7 @@ class HxMessage:
 
 def _accounts(store: Store) -> tuple[dict[int, str | None], dict[int, str | None]]:
     """0x49 account -> primary SMTP address; 0x4a mail account -> that address (via u64 at +0x44)."""
-    acct = {i: store.first(c, lambda o: o.text(0x156C)) for i, c in store.by_class[C_ACCOUNT].items()}
+    acct = {i: store.first(c, lambda o: o.text(o.at("smtp"))) for i, c in store.by_class[C_ACCOUNT].items()}
     mail = {i: acct.get(store.latest(c).u64(0x44)) for i, c in store.by_class[C_MAIL_ACCOUNT].items()}
     return acct, mail
 
@@ -408,8 +428,8 @@ def _accounts(store: Store) -> tuple[dict[int, str | None], dict[int, str | None
 def _folders(store: Store) -> dict[int, tuple[str | None, str | None]]:
     out = {}
     for i, c in store.by_class[C_FOLDER].items():
-        wk = store.latest(c).u32(0x47C)
-        out[i] = (store.first(c, lambda o: o.text(0x434)), WELL_KNOWN_FOLDER.get(wk))
+        ob = store.latest(c)
+        out[i] = (store.first(c, lambda o: o.text(o.at("name"))), WELL_KNOWN_FOLDER.get(ob.u32(ob.at("type"))))
     return out
 
 
@@ -443,11 +463,11 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
         body_html = body_file = None
         bodies = store.copies(C_BODY, mid)
         if bodies:
-            raw = store.first(bodies, lambda o: o.blob(0x678))
+            raw = store.first(bodies, lambda o: o.blob(o.at("html")))
             body_html = raw.decode("utf-8", "replace") if raw else None
 
             def _bfile(o: Obj) -> str | None:
-                fid = o.ref_id(0x2B2, C_FILE)
+                fid = o.ref_id(o.at("file"), C_FILE)
                 fc = store.copies(C_FILE, fid) if fid is not None else []
                 return store.first(fc, lambda f: f.text(0x88)) if fc else None
 

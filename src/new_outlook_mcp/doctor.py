@@ -96,7 +96,7 @@ def check_layout(hxd: Path, version: str | None) -> Check:
     outlook = f"Outlook {version}" if version else "Outlook"
     if not mismatch:
         return Check("hxstore_layout", "ok", f"{outlook}: record layout matches the decoder")
-    changes = ", ".join(f"class {c:#x} {fs:#x} (was {hxformat.EXPECTED_FS[c]:#x})" for (c, fs) in sorted(mismatch))
+    changes = ", ".join(f"class {c:#x} {fs:#x} (known: {hxformat.expected_sizes(c)})" for (c, fs) in sorted(mismatch))
     return Check("hxstore_layout", "error", f"{outlook} changed the cache layout: {changes}",
                  "Sync refuses to import until the decoder learns the new layout. Compare snapshots with "
                  "`new-outlook experiment` and update EXPECTED_FS and the field offsets in importers/hxformat.py "

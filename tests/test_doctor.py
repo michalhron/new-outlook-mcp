@@ -35,7 +35,7 @@ def test_layout_ok_and_changed(tmp_path, monkeypatch):
     assert doctor.check_layout(hxd, "16.114.3").status == "ok"
     objs = mailbox(profile)
     msg = next(o for o in objs if o.cls == hxformat.C_MESSAGE)
-    msg.fs = hxformat.EXPECTED_FS[hxformat.C_MESSAGE] + 0x10
+    msg.fs = hxformat.FS_16_114[hxformat.C_MESSAGE] + 0x10
     changed = write_store(tmp_path / "changed.hxd", objs)
     c = doctor.check_layout(changed, "16.114.3")
     assert c.status == "error" and "16.114.3" in c.detail and f"{hxformat.C_MESSAGE:#x}" in c.detail

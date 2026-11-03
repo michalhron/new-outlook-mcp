@@ -2,7 +2,7 @@
 
 New Outlook keeps its local cache in
 `~/Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile/HxStore.hxd`.
-This page describes the format as decoded from one real store (New Outlook for Mac 16.113.4, about 27 MB) and what the `hxstore` importer does with it. It contains structure only. No content from the sample appears here, in the code or in the tests.
+This page describes the format as decoded from one real store (New Outlook for Mac 16.113.4, about 27 MB; the layout changes in 16.114.3 are in [their own section](#outlook-161143-layout-change)) and what the `hxstore` importer does with it. It contains structure only. No content from the sample appears here, in the code or in the tests.
 
 Confidence labels:
 
@@ -91,22 +91,22 @@ Inside an inflated payload each object is preceded by a u32 length and often fol
 
 ### Classes used
 
-| Class | fs on 16.113.4 | Meaning |
-|---|---|---|
-| 0x49 | 0x1992 | account (settings, primary SMTP address) |
-| 0x4a | 0x6ca | mail account |
-| 0x4d | 0x4c2 | folder |
-| 0x55 | 0x15e | recipient |
-| 0x68 | n/a | calendar |
-| 0x6b | 0x455 | calendar event |
-| 0x6c | 0x348 | event detail (body, join URL) |
-| 0xc9 | 0x60f | message |
-| 0xca | 0x740 | message body |
-| 0xf7 | 0xc5 | file reference |
-| 0x16a | 0x318 | attachment |
-| 0x4f | 0x430 | per-folder message list item (not imported) |
+| Class | fs on 16.113.4 | fs on 16.114.3 | Meaning |
+|---|---|---|---|
+| 0x49 | 0x1992 | 0x19d0 | account (settings, primary SMTP address) |
+| 0x4a | 0x6ca | same | mail account |
+| 0x4d | 0x4c2 | 0x4d8 | folder |
+| 0x55 | 0x15e | same | recipient |
+| 0x68 | n/a | n/a | calendar |
+| 0x6b | 0x455 | same | calendar event |
+| 0x6c | 0x348 | same | event detail (body, join URL) |
+| 0xc9 | 0x60f | same | message |
+| 0xca | 0x740 | 0x74e | message body |
+| 0xf7 | 0xc5 | same | file reference |
+| 0x16a | 0x318 | same | attachment |
+| 0x4f | 0x430 | not checked | per-folder message list item (not imported) |
 
-**Layout guard.** Field offsets are known only for the sizes in this table. If any object of a listed class has a different fs, the import stops with an error that names the class, the found size and the expected size. Nothing is imported from that store, and the sync notification fires. The importer does not guess offsets for a changed layout. After an Outlook update triggers this, the offsets for the new size must be checked on a fresh snapshot.
+**Layout guard.** Field offsets are known only for the sizes in this table (`EXPECTED_FS` in `importers/hxformat.py`). Both builds are accepted, per object: each object is read with the offsets of its own size (`FIELDS`), so copies written before and after an update can sit in one store. If any object of a listed class has a different fs, the import stops with an error that names the class, the found size and the expected size. Nothing is imported from that store, and the sync notification fires. The importer does not guess offsets for a changed layout. After an Outlook update triggers this, the offsets for the new size must be checked on a fresh snapshot.
 
 **List items (class 0x4f).** The sample has 644 list items and 948 message objects. 641 of the list items reference an existing 0xc9 message through typed references at +0x11a (id at +0x124) and further ones at +0x12e, +0x14a and +0x15e. (C) So list items do not reveal messages whose full object is missing. On this sample, the 0xc9 objects are the complete message set.
 
@@ -166,9 +166,29 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 
 **Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0x19d Reply-To. No Bcc kind was seen. Name at +0x124, address at +0x12c. (C)
 
+Offsets in the sections below are for 16.113.4. For the account, folder and body fields that moved in 16.114.3, see [the 16.114.3 section](#outlook-161143-layout-change).
+
 **Bodies** are 0xca objects with the same id as the message. Descriptor +0x678 holds the UTF-8 HTML body. When the body is too large, a typed reference at +0x2b2 points to a 0xf7 file object whose +0x88 string is `~/Files/S0/<n>/EFMData/<k>.dat`. That file is gzip-compressed HTML (per teamscrawl, see below). `~` means the profile folder that holds HxStore.hxd. (V for the link, I for gzip until checked on a real file.) No plain-text body was seen.
 
 **Folders** (0x4d): name at +0x434. A u32 at +0x47c gives the well-known type independent of language: 0x61 Inbox, 0x63 Archive, 0x64 Drafts, 0x65 Sent Items, 0x67 Deleted Items. 0x62 and 0x66 are unknown; 0x7a is an ordinary folder. (V)
+
+## Outlook 16.114.3 layout change
+
+After Outlook for Mac updated to 16.114.3, three classes grew and the importer stopped with `HxStoreLayoutError`. All other classes kept their size, and every 16.114.3 object of the three classes had the new size (no 16.113.4-sized copies were left in the store). The new offsets were found on a copy taken with `new-outlook experiment start`, by matching fields against values the archive had already imported from 16.113.4 (folder names, account addresses, and message bodies imported before 9 October 2026), and against the message preview, which sits in the unchanged 0xc9 class.
+
+| Class | fs 16.113.4 → 16.114.3 | Field | 16.113.4 | 16.114.3 | Where the bytes went | Evidence | Confidence |
+|---|---|---|---|---|---|---|---|
+| 0x49 account | 0x1992 → 0x19d0 (+0x3e) | primary SMTP address | +0x156c | +0x159c | +0x30 before the address, +0xe after it | Matches the archived account address. +0x15b4 holds the same string in all 91 copies, so the choice between the two does not change the result. +0x156c now holds a 16-character area-one string. | C |
+| 0x4d folder | 0x4c2 → 0x4d8 (+0x16) | name | +0x434 | +0x448 | +0x14 before the name | The only string descriptor in the class. Every message's folder reference (895 of 895) resolves to a folder with a name there. 12 of the 28 names are folders the archive already had from 16.113.4; the rest belong to group mailboxes and a second account that the archive had no mail from. | V |
+| 0x4d folder | | well-known type | +0x47c | +0x490 | same +0x14; the other +0x2 lie after the type | Values 0x61 to 0x67 or 0x7a there in 275 of 284 folders. The main account's Inbox, Archive, Sent Items, Deleted Items and Drafts carry their types; the other typed folders are group mailbox inboxes and a second account whose folders are named by GUID. | V |
+| 0xca body | 0x740 → 0x74e (+0xe) | HTML body | +0x678 | +0x684 | +0x8 before +0x2b2, +0x4 between +0x2b2 and the body, +0x2 after it | 107 of 108 bodies imported from 16.113.4 match byte for byte. The 108th no longer has an inline body. In 243 of 250 messages newer than 9 October the body text contains the preview. | V |
+| 0xca body | | link to the EFMData file | +0x2b2 | +0x2ba | +0x8 before it | All 35 references point at a 0xf7 file object whose path is under `EFMData/`. No 0xf7 reference is left at +0x2b2. | V |
+
+The exact positions of the inserted bytes inside these ranges are not known, because no 16.113.4 copy of the store was kept. Only the fields the importer reads were placed.
+
+**A second HTML body at +0x67c (I).** In 16.114.3 the 0xca descriptor just before the body (+0x67c) also holds UTF-8 HTML. It equals +0x684 in 442 objects. Where the two differ (378), +0x67c is always longer: it is a full HTML document, while +0x684 is often a fragment. In 34 messages only +0x67c contains the preview text, so for those the imported body is shorter than what Outlook shows. If the body area moved by +0xc, as +0x684 did, then +0x67c is the old +0x670, which the importer never read on 16.113.4. Probably the full body versus a trimmed one (Graph's `body` and `uniqueBody`). The importer still reads +0x684, the field it read before.
+
+The first real sync after the change imported 266 messages dated 9 October to 3 November 2026 into Archive, Sent Items, Deleted Items and Inbox. `new-outlook doctor` reported `hxstore_layout` ok.
 
 ## Attachments (class 0x16a)
 
@@ -239,6 +259,8 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 - My-response code 2 (assumed declined).
 - Whether the 51-byte key equals Graph's ImmutableId.
 - The header fields at 0x10 and 0x68, and the region at 0x3000.
+- The second HTML body at 0xca +0x67c (16.114.3): whether it is the full body, and whether to prefer it.
+- Exactly where inside each range the 16.114.3 bytes were inserted.
 - About 16% of payload bytes lie outside recognised objects.
 - What `hxcore.hfl` holds, and whether recent changes sit there before reaching HxStore.hxd. The importer ignores it.
 

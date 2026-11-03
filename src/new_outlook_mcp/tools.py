@@ -789,6 +789,20 @@ def _open_url(url: str) -> None:
     subprocess.run(["open", url], check=True, timeout=30)
 
 
+OUTLOOK_BUNDLE_ID = "com.microsoft.Outlook"
+
+
+def _open_in_outlook(target: str) -> str:
+    """Open a mailto: link or .ics file in Outlook even when another app is the default mail app.
+    Falls back to the default app if Outlook is not installed. Returns the app that opened it."""
+    try:
+        subprocess.run(["open", "-b", OUTLOOK_BUNDLE_ID, target], check=True, timeout=30, capture_output=True)
+        return "Outlook"
+    except subprocess.CalledProcessError:
+        _open_url(target)
+        return "the default mail app"
+
+
 def create_draft(
     to: list[str] | str | None = None,
     *,
@@ -796,18 +810,19 @@ def create_draft(
     bcc: list[str] | str | None = None,
     subject: str | None = None,
     body: str | None = None,
-    opener: Callable[[str], None] | None = None,
+    opener: Callable[[str], str | None] | None = None,
 ) -> dict:
-    """Open a prefilled draft in the default mail app. Never sends anything."""
+    """Open a prefilled draft in Outlook. Never sends anything."""
     url = build_mailto(to, cc=cc, bcc=bcc, subject=subject, body=body)
     if len(url) > MAX_MAILTO_LENGTH:
         raise ToolInputError(
             f"draft is too long for a mailto: link ({len(url)} > {MAX_MAILTO_LENGTH} chars). Shorten the body."
         )
-    (opener or _open_url)(url)
+    app = (opener or _open_in_outlook)(url) or "Outlook"
     return {
         "opened": True,
-        "note": "A draft window was opened in the default mail app. Nothing was sent; review and send it manually.",
+        "app": app,
+        "note": f"A draft window was opened in {app}. Nothing was sent; review and send it manually.",
         "mailto_length": len(url),
     }
 

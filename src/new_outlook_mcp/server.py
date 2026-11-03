@@ -312,7 +312,7 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
     ) -> dict:
-        """Open a prefilled draft in the default mail app (New Outlook) via a mailto: link.
+        """Open a prefilled draft in Outlook via a mailto: link, even if another app is the default mail app.
         It never sends: the user reviews and sends the draft manually."""
         try:
             return tools.create_draft(to, cc=cc, bcc=bcc, subject=subject, body=body)

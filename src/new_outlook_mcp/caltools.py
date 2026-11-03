@@ -15,7 +15,7 @@ from .calendar_store import local_tz, resolve_tz
 from . import privacy
 from .db import Archive, normalize_subject
 from .ics import build_event_ics
-from .tools import ToolInputError, _fts_fallback, _open_url
+from .tools import ToolInputError, _fts_fallback, _open_in_outlook
 
 MAX_EVENTS = 500
 WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
@@ -460,7 +460,7 @@ def meeting_prep(archive: Archive, event_id: int | str, *, days_back: int = 90, 
 
 def create_event_draft(*, subject: str, start: str, end: str | None = None, timezone_name: str | None = None,
                        all_day: bool = False, location: str | None = None, body: str | None = None,
-                       attendees: list[str] | None = None, opener: Callable[[str], None] | None = None,
+                       attendees: list[str] | None = None, opener: Callable[[str], str | None] | None = None,
                        out_dir: Path | None = None) -> dict:
     """EXPERIMENTAL. Write an .ics file and open it, so Outlook shows the event for the user to save."""
     tz = _tz(timezone_name)
@@ -482,9 +482,9 @@ def create_event_draft(*, subject: str, start: str, end: str | None = None, time
     name = re.sub(r"[^\w.-]+", "-", subject.strip())[:60].strip("-") or "event"
     path = d / f"{name}.ics"
     path.write_bytes(data)
-    (opener or _open_url)(str(path))
+    app = (opener or _open_in_outlook)(str(path)) or "Outlook"
     return {
-        "opened": True, "path": str(path), "experimental": True,
-        "note": ("Opened an .ics file. Outlook shows it as a new event: review it and save it yourself. "
+        "opened": True, "app": app, "path": str(path), "experimental": True,
+        "note": (f"Opened an .ics file in {app}, which shows it as a new event: review it and save it yourself. "
                  "Nothing was added to your calendar and no invitations were sent."),
     }

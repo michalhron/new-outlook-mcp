@@ -105,6 +105,10 @@ Experimental. Writes an `.ics` file and opens it in Outlook, so Outlook offers t
 
 Counts, coverage per source and account, the last syncs, watcher health and a privacy summary that holds counts only.
 
+`diagnose(check_layout?)`
+
+Checks whether the server may read Outlook's files, whether the cache layout matches the decoder, the archive's age and the sync agents. Each problem comes with a fix. `check_layout=false` skips decoding a copy of the cache.
+
 `sync_now(source?)`
 
 Imports from the local files now. `source` is `legacy`, `hxstore`, `ics` or `all` (default).

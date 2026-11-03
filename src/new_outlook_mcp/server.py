@@ -13,7 +13,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_types import ToolAnnotations
 from pydantic import Field
 
-from . import __version__, caltools, paths, realms, tools
+from . import __version__, caltools, doctor, paths, realms, tools
 from .db import Archive
 from .sync import sync
 
@@ -293,6 +293,14 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
     def archive_status() -> dict:
         """Archive size, date coverage per source (legacy, hxstore) and the last sync per source."""
         return call(tools.archive_status)
+
+    @server.tool(annotations=READ_ONLY)
+    def diagnose(check_layout: Annotated[bool, Field(
+            description="Also decode a copy of the cache to check its layout (slower, about a minute)")] = True) -> dict:
+        """Run when sync fails, results look stale or a tool errors: checks whether this server may read
+        Outlook's files, whether the cache layout matches the decoder, archive age and the sync agents.
+        Each problem comes with a fix to pass on to the user."""
+        return doctor.report(doctor.run_checks(db_path, layout=check_layout))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=True, open_world_hint=False))

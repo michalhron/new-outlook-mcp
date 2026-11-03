@@ -1,4 +1,4 @@
-"""Command line: new-outlook sync | watch | embed | search | snapshot | backup-legacy | status | privacy | purge-excluded | launchd | serve."""
+"""Command line: new-outlook sync | watch | embed | search | snapshot | backup-legacy | status | doctor | privacy | purge-excluded | launchd | serve."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from . import launchd, paths
+from . import doctor, launchd, paths
 from .db import Archive
 from .importers import IMPORTERS, make_importer
 from .notify import notify
@@ -246,6 +246,12 @@ def cmd_launchd(args) -> int:
     else:
         opts = {"interval_hours": args.interval_hours, "source": args.source}
         log_name = "sync.log"
+    if args.via_uv:
+        try:
+            opts["program"] = [*doctor.uv_launcher(), *launchd.cli_executable()]
+        except RuntimeError as exc:
+            print(exc, file=sys.stderr)
+            return 1
     label = launchd.WATCH_LABEL if args.watch else launchd.LABEL
     if args.action == "print":
         sys.stdout.write(launchd.render(**opts).decode())
@@ -257,6 +263,19 @@ def cmd_launchd(args) -> int:
     removed = launchd.uninstall(watch=args.watch)
     print("removed " + str(launchd.plist_path(label)) if removed else "no LaunchAgent installed")
     return 0
+
+
+def cmd_doctor(args) -> int:
+    rep = doctor.report(doctor.run_checks(Path(args.db), layout=not args.no_layout))
+    if args.json:
+        print(json.dumps(rep, indent=2))
+    else:
+        print(f"checked as {rep['process']}")
+        for c in rep["checks"]:
+            print(f"  [{c['status']:7}] {c['name']}: {c['detail']}")
+            if c["fix"]:
+                print(f"            fix: {c['fix']}")
+    return 1 if rep["status"] == "error" else 0
 
 
 def cmd_watch(args) -> int:
@@ -599,7 +618,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--source", type=_sources_arg, default=LAUNCHD_DEFAULT_SOURCES)
     s.add_argument("--no-load", action="store_true", help="write the plist without loading it")
     s.add_argument("--watch", action="store_true", help="act on the file watcher agent instead of the periodic job")
+    s.add_argument("--via-uv", action="store_true",
+                   help="run the agent through uv, so it uses uv's Full Disk Access instead of Python's")
     s.set_defaults(func=cmd_launchd)
+
+    s = sub.add_parser("doctor", help="check file access, cache layout, archive age and agents, with a fix for each problem")
+    s.add_argument("--json", action="store_true")
+    s.add_argument("--no-layout", action="store_true", help="skip decoding a copy of the cache (faster)")
+    s.set_defaults(func=cmd_doctor)
 
     s = sub.add_parser("watch", help="watch Outlook's cache files and sync shortly after they change")
     s.add_argument("--debounce", type=float, default=20, help="seconds without new changes before syncing")

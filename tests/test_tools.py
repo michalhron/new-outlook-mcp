@@ -145,3 +145,21 @@ def test_create_draft_uses_opener_and_never_sends():
     assert res["opened"] and opened[0].startswith("mailto:a@example.org?")
     with pytest.raises(tools.ToolInputError):
         tools.create_draft(["a@example.org"], body="x" * 40000, opener=opened.append)
+
+
+def test_open_in_outlook_targets_outlook_and_falls_back(monkeypatch):
+    calls = []
+
+    def run(cmd, **kw):
+        calls.append(cmd)
+        if "-b" in cmd and fail:
+            raise tools.subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(tools.subprocess, "run", run)
+    fail = False
+    assert tools._open_in_outlook("mailto:a@example.org") == "Outlook"
+    assert calls == [["open", "-b", "com.microsoft.Outlook", "mailto:a@example.org"]]
+    calls.clear()
+    fail = True
+    assert tools._open_in_outlook("mailto:a@example.org") == "the default mail app"
+    assert calls[-1] == ["open", "mailto:a@example.org"]

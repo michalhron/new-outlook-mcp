@@ -73,7 +73,7 @@ Claude Desktop: add this to `claude_desktop_config.json`, with your user name:
 {"mcpServers": {"new-outlook": {"command": "/Users/YOU/.local/bin/new-outlook-mcp"}}}
 ```
 
-Set New Outlook as the default mail app (Outlook › Settings › General) so drafts from `create_draft` open there.
+Drafts from `create_draft` and `create_event_draft` open in Outlook whatever your default mail app is.
 
 Try it: ask Claude "What did I get from the dean's office last week?" or "Find the thread about the ethics approval".
 

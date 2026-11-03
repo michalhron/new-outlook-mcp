@@ -93,11 +93,11 @@ Nothing is ever sent or saved without you.
 
 `create_draft(to, subject?, body?, cc?, bcc?)`
 
-Opens a prefilled draft in your default mail app through a `mailto:` link. You review and send it.
+Opens a prefilled draft in Outlook through a `mailto:` link, even when another app (HEY, Apple Mail) is your default mail app. Only if Outlook is not installed does it fall back to the default app; `app` in the result says which one opened it. You review and send it.
 
 `create_event_draft(subject, start, end?, all_day?, location?, body?, attendees?, timezone?)`
 
-Experimental. Writes an `.ics` file and opens it, so Outlook offers to add the event. `end` defaults to one hour after `start`.
+Experimental. Writes an `.ics` file and opens it in Outlook, so Outlook offers to add the event. `end` defaults to one hour after `start`.
 
 ## Status
 

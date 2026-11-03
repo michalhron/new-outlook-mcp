@@ -12,7 +12,7 @@ from new_outlook_mcp.server import build_server
 
 EXPECTED_TOOLS = {
     "search_emails", "get_email", "get_thread", "list_recent", "list_folders", "archive_status",
-    "sync_now", "create_draft", "list_attachments", "get_attachment",
+    "sync_now", "diagnose", "create_draft", "list_attachments", "get_attachment",
     "list_calendar_events", "get_calendar_event", "search_calendar", "calendar_freebusy", "find_free_slots",
     "meeting_prep", "create_event_draft", "semantic_search", "find_similar",
 }

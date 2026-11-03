@@ -61,7 +61,7 @@ The full walk-through, including the macOS permission prompt and Claude Desktop,
 | Attachments | `list_attachments`, `get_attachment`, `search_files` |
 | Calendar | `list_calendar_events`, `get_calendar_event`, `search_calendar`, `calendar_freebusy`, `find_free_slots`, `meeting_prep` |
 | Drafts | `create_draft` (opens a `mailto:` draft), `create_event_draft` (opens an `.ics` file) |
-| Status | `archive_status`, `sync_now` |
+| Status | `archive_status`, `sync_now`, `diagnose` |
 
 Parameters and examples: [docs/tools.md](docs/tools.md).
 

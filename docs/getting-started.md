@@ -38,11 +38,17 @@ This installs two commands: `new-outlook` (the command line) and `new-outlook-mc
 
 macOS asks before one app reads another app's container. The first run from Terminal may show a prompt. Allow it.
 
-The background agents run without a Terminal, so they need Full Disk Access. Give it to the Python that pipx uses, in System Settings › Privacy & Security › Full Disk Access. This prints its path:
+The MCP server and the background agents run without a Terminal, so they need Full Disk Access. macOS checks it for the program that opens the file, not for the app that started it. Claude starts MCP servers through a helper that drops Claude's own permissions, so giving Claude Full Disk Access does not help.
 
-```sh
-head -1 $(which new-outlook)
-```
+The simplest route is to give Full Disk Access to [uv](https://docs.astral.sh/uv/) and start everything through it:
+
+1. System Settings › Privacy & Security › Full Disk Access, click +, press Cmd-Shift-G and enter `~/.local/bin/uv` (or the output of `which uv`).
+2. Install the agents with `--via-uv` (see [Keep the archive current](#keep-the-archive-current)).
+3. Start the MCP server through uv (see [Connect Claude](#connect-claude)).
+
+Alternatively, give Full Disk Access to the Python that pipx uses (`head -1 $(which new-outlook)` prints its path; it changes when Homebrew upgrades Python) and leave out `--via-uv`.
+
+`new-outlook doctor` checks access, the cache layout, archive age and the agents, and prints a fix for each problem. Claude can run the same checks with the `diagnose` tool.
 
 ## First sync
 
@@ -70,7 +76,7 @@ claude mcp add new-outlook -- new-outlook-mcp
 Claude Desktop: add this to `claude_desktop_config.json`, with your user name:
 
 ```json
-{"mcpServers": {"new-outlook": {"command": "/Users/YOU/.local/bin/new-outlook-mcp"}}}
+{"mcpServers": {"new-outlook": {"command": "/Users/YOU/.local/bin/uv", "args": ["run", "--no-project", "--python", "/Users/YOU/.local/pipx/venvs/new-outlook-mcp/bin/python", "/Users/YOU/.local/bin/new-outlook-mcp"]}}}
 ```
 
 Drafts from `create_draft` and `create_event_draft` open in Outlook whatever your default mail app is.
@@ -82,8 +88,8 @@ Try it: ask Claude "What did I get from the dean's office last week?" or "Find t
 A watcher syncs about a minute after Outlook changes its cache. A periodic job every 36 hours is the fallback and also refreshes calendar feeds.
 
 ```sh
-new-outlook launchd install --watch    # the watcher, kept alive by launchd
-new-outlook launchd install            # the 36 h fallback job
+new-outlook launchd install --watch --via-uv    # the watcher, kept alive by launchd
+new-outlook launchd install --via-uv            # the 36 h fallback job
 new-outlook status                     # last sync, lag, watcher alive
 ```
 

@@ -41,7 +41,8 @@ Other warnings in `new-outlook status`:
 |---|---|
 | A source returned zero records after earlier runs found some | Outlook moved or emptied the file, or the format changed. Check the paths in [getting-started.md](getting-started.md#configuration). |
 | Sync lag is growing | The watcher is not running. `new-outlook launchd install --watch` restarts it. Check the logs in `~/Library/Logs/new-outlook-mcp/`. |
-| Permission errors | The Python used by the agents lacks Full Disk Access ([getting-started.md](getting-started.md#give-it-access-to-outlooks-files)). |
+| Permission errors | The program that opens Outlook's files lacks Full Disk Access. Giving it to Claude is not enough. Run `new-outlook doctor`, and see [getting-started.md](getting-started.md#give-it-access-to-outlooks-files). |
+| HxStore layout changed | Outlook was updated and changed its cache records. Sync refuses to import rather than misread them; `new-outlook doctor` lists the changed classes. The decoder in `importers/hxformat.py` needs the new sizes and offsets. |
 
 ## Backups
 

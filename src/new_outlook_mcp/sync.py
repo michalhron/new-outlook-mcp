@@ -141,6 +141,9 @@ def run_import(
         log.exception("%s import failed", name)
         res.status = "error"
         res.message = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, PermissionError):
+            from .doctor import _access_fix
+            res.message += ". " + _access_fix()
     finally:
         archive.finish_run(
             run_id, status=res.status, seen=res.seen, inserted=res.inserted, merged=res.merged,

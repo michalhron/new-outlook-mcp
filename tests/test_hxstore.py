@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from hxsynth import ME, ObjSpec, mailbox, write_store
+from hxsynth import ME, SENT, ObjSpec, mailbox, write_store
 
 from new_outlook_mcp import caltools, tools
 from new_outlook_mcp.importers import hxformat
@@ -60,6 +60,41 @@ def test_layout_change_is_reported_as_drift(archive, tmp_path):
     assert res.status == "error" and res.needs_attention
     assert "layout changed" in res.message and "0xc9" in res.message and "0x620" in res.message
     assert archive.counts()["messages"] == 0 and archive.counts()["events"] == 0
+
+
+@pytest.mark.parametrize("sizes", [hxformat.FS_16_113, hxformat.FS_16_114], ids=["16.113.4", "16.114.3"])
+def test_each_build_reads_its_own_offsets(tmp_path, sizes):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    write_store(p / "HxStore.hxd", mailbox(p, sizes=sizes))
+    msgs = {m.local_id: m for m in hxformat.iter_messages(hxformat.Store(p / "HxStore.hxd"))}
+    m1, m2 = msgs[0x5001], msgs[0x5002]
+    assert (m1.folder, m1.folder_type, m1.account) == ("Inbox", "inbox", ME)
+    assert m1.body_html == "<html><body><p>Agenda attached. Coffee at ten.</p></body></html>"
+    assert (m2.folder, m2.folder_type) == ("Sent Items", "sentitems")
+    assert m2.body_file_ref == "~/Files/S0/3/EFMData/7.dat"
+
+
+def test_mixed_builds_in_one_store(tmp_path):
+    # Copies written before and after an update can sit side by side; each is read with its own layout.
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    old = {o.oid: o for o in mailbox(p, sizes=hxformat.FS_16_113)}
+    objs = [old[o.oid] if o.cls == hxformat.C_FOLDER and o.oid == SENT else o for o in mailbox(p)]
+    write_store(p / "HxStore.hxd", objs)
+    msgs = {m.local_id: m for m in hxformat.iter_messages(hxformat.Store(p / "HxStore.hxd"))}
+    assert msgs[0x5001].folder == "Inbox" and msgs[0x5002].folder == "Sent Items"
+
+
+def test_unverified_size_between_builds_is_still_refused(tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    folder = next(o for o in objs if o.cls == hxformat.C_FOLDER)
+    folder.fs = hxformat.FS_16_114[hxformat.C_FOLDER] + 4
+    write_store(p / "HxStore.hxd", objs)
+    with pytest.raises(hxformat.HxStoreLayoutError, match=r"class 0x4d: size 0x4dc x1 \(expected 0x4c2 or 0x4d8\)"):
+        hxformat.Store(p / "HxStore.hxd")
 
 
 def test_sync_reports_block_and_object_stats(archive, profile, tmp_path):

@@ -91,9 +91,9 @@ An event, its attendees, and recent threads (default: last 90 days, up to 10) wi
 
 Nothing is ever sent or saved without you.
 
-`create_draft(to, subject?, body?, cc?, bcc?)`
+`create_draft(to, subject?, body?, cc?, bcc?, attachments?)`
 
-Opens a prefilled draft in Outlook through a `mailto:` link, even when another app (HEY, Apple Mail) is your default mail app. Only if Outlook is not installed does it fall back to the default app; `app` in the result says which one opened it. You review and send it.
+Opens a prefilled draft in Outlook, even when another app (HEY, Apple Mail) is your default mail app. Without attachments it uses a `mailto:` link. `attachments` takes absolute paths of local files: the draft is then built through Outlook's AppleScript interface, and the result reports `route` and `attachments_in_draft`. If that fails, a `mailto:` draft opens without the files and they are shown in Finder to drag in. Only if Outlook is not installed does it fall back to the default app; `app` in the result says which one opened it. You review and send it.
 
 `create_event_draft(subject, start, end?, all_day?, location?, body?, attendees?, timezone?)`
 

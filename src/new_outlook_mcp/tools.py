@@ -852,6 +852,15 @@ def search_files(
     return out
 
 
+def _addresses(value: list[str] | str | None) -> list[str]:
+    items = (value if isinstance(value, list) else re.split(r"[,;]", value)) if value else []
+    out = [i.strip() for i in items if i and i.strip()]
+    for addr in out:
+        if "@" not in addr or any(c in addr for c in "\r\n"):
+            raise ToolInputError(f"invalid email address: {addr!r}")
+    return out
+
+
 def build_mailto(
     to: list[str] | str | None = None,
     *,
@@ -862,19 +871,10 @@ def build_mailto(
 ) -> str:
     """Build an RFC 6068 mailto: URL."""
 
-    def norm(v: list[str] | str | None) -> list[str]:
-        if not v:
-            return []
-        items = v if isinstance(v, list) else re.split(r"[,;]", v)
-        return [i.strip() for i in items if i and i.strip()]
-
     def enc(s: str) -> str:
         return quote(s, safe="")
 
-    to_l, cc_l, bcc_l = norm(to), norm(cc), norm(bcc)
-    for addr in to_l + cc_l + bcc_l:
-        if "@" not in addr or any(c in addr for c in "\r\n"):
-            raise ToolInputError(f"invalid email address: {addr!r}")
+    to_l, cc_l, bcc_l = _addresses(to), _addresses(cc), _addresses(bcc)
     url = "mailto:" + ",".join(quote(a, safe="@") for a in to_l)
     q = []
     if cc_l:
@@ -908,6 +908,84 @@ def _open_in_outlook(target: str) -> str:
         return "the default mail app"
 
 
+# Builds a draft and shows it. There is deliberately no send command here: the user sends it.
+DRAFT_SCRIPT = """
+on fileRef(p)
+    return POSIX file p
+end fileRef
+
+on run argv
+    set toCount to (item 3 of argv) as integer
+    set ccCount to (item 4 of argv) as integer
+    set bccCount to (item 5 of argv) as integer
+    set i to 6
+    tell application "Microsoft Outlook"
+        set m to make new outgoing message with properties {subject:(item 1 of argv), plain text content:(item 2 of argv)}
+        repeat toCount times
+            make new to recipient at m with properties {email address:{address:(item i of argv)}}
+            set i to i + 1
+        end repeat
+        repeat ccCount times
+            make new cc recipient at m with properties {email address:{address:(item i of argv)}}
+            set i to i + 1
+        end repeat
+        repeat bccCount times
+            make new bcc recipient at m with properties {email address:{address:(item i of argv)}}
+            set i to i + 1
+        end repeat
+        repeat while i <= (count of argv)
+            make new attachment at m with properties {file:my fileRef(item i of argv)}
+            set i to i + 1
+        end repeat
+        set attached to count of attachments of m
+        open m
+        activate
+    end tell
+    return attached
+end run
+"""
+
+ATTACHMENT_WARN_BYTES = 25 * 1024 * 1024
+
+
+class DraftScriptError(RuntimeError):
+    pass
+
+
+def _run_draft_script(args: list[str]) -> int:
+    """Create the draft through Outlook's AppleScript interface. Returns how many files it holds."""
+    try:
+        # "-" reads the script from stdin and ends option parsing, so a body starting with "-" is safe.
+        proc = subprocess.run(["osascript", "-", *args], input=DRAFT_SCRIPT, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DraftScriptError(f"{type(exc).__name__}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.strip()[:300]
+        if "-1743" in detail:
+            detail = "macOS has not allowed this program to control Microsoft Outlook (Privacy & Security > Automation)"
+        raise DraftScriptError(detail)
+    try:
+        return int(proc.stdout.strip())
+    except ValueError as exc:
+        raise DraftScriptError(f"unexpected reply from Outlook: {proc.stdout.strip()[:80]!r}") from exc
+
+
+def _reveal_in_finder(path: str) -> None:
+    subprocess.run(["open", "-R", path], check=False, timeout=30, capture_output=True)
+
+
+def _check_attachments(paths: list[str] | None) -> list[dict]:
+    files = []
+    for raw in paths or []:
+        p = Path(raw)
+        if not p.is_absolute():
+            raise ToolInputError(f"attachment path must be absolute: {raw!r}")
+        if not p.is_file():
+            raise ToolInputError(f"attachment not found or not a file: {raw!r}")
+        files.append({"path": str(p), "name": p.name, "size_bytes": p.stat().st_size})
+    return files
+
+
 def create_draft(
     to: list[str] | str | None = None,
     *,
@@ -915,21 +993,65 @@ def create_draft(
     bcc: list[str] | str | None = None,
     subject: str | None = None,
     body: str | None = None,
+    attachments: list[str] | None = None,
     opener: Callable[[str], str | None] | None = None,
+    scripter: Callable[[list[str]], int] | None = None,
+    revealer: Callable[[str], None] | None = None,
 ) -> dict:
-    """Open a prefilled draft in Outlook. Never sends anything."""
+    """Open a draft in Outlook for the user to review. Never sends anything.
+
+    With attachments the draft is built through Outlook's AppleScript interface. If that fails it opens a
+    mailto: draft and reveals the files in Finder, and the result says they are not attached.
+    """
+    files = _check_attachments(attachments)
     url = build_mailto(to, cc=cc, bcc=bcc, subject=subject, body=body)
-    if len(url) > MAX_MAILTO_LENGTH:
-        raise ToolInputError(
-            f"draft is too long for a mailto: link ({len(url)} > {MAX_MAILTO_LENGTH} chars). Shorten the body."
-        )
-    app = (opener or _open_in_outlook)(url) or "Outlook"
-    return {
-        "opened": True,
-        "app": app,
-        "note": f"A draft window was opened in {app}. Nothing was sent; review and send it manually.",
-        "mailto_length": len(url),
-    }
+    reveal = revealer or _reveal_in_finder
+
+    def open_mailto() -> str:
+        if len(url) > MAX_MAILTO_LENGTH:
+            raise ToolInputError(
+                f"draft is too long for a mailto: link ({len(url)} > {MAX_MAILTO_LENGTH} chars). Shorten the body."
+            )
+        return (opener or _open_in_outlook)(url) or "Outlook"
+
+    if not files:
+        app = open_mailto()
+        return {
+            "opened": True,
+            "app": app,
+            "route": "mailto",
+            "note": f"A draft window was opened in {app}. Nothing was sent; review and send it manually.",
+            "mailto_length": len(url),
+        }
+
+    out: dict = {"opened": True, "attachments": files}
+    total = sum(f["size_bytes"] for f in files)
+    if total > ATTACHMENT_WARN_BYTES:
+        out["size_warning"] = f"Attachments total {total // (1024 * 1024)} MB; the mail server may refuse a message this large."
+    args = [(subject or "").replace("\r", " ").replace("\n", " "), (body or "").replace("\r\n", "\n"),
+            *(str(len(_addresses(v))) for v in (to, cc, bcc)),
+            *_addresses(to), *_addresses(cc), *_addresses(bcc), *(f["path"] for f in files)]
+    try:
+        in_draft = (scripter or _run_draft_script)(args)
+    except DraftScriptError as exc:
+        app = open_mailto()
+        for f in files:
+            reveal(f["path"])
+        return {**out, "app": app, "route": "mailto", "attachments_in_draft": False, "fallback_reason": str(exc),
+                "note": f"A draft window was opened in {app}, WITHOUT the attachments: they could not be added "
+                        "automatically. The files are shown in Finder; drag them into the draft. "
+                        "Nothing was sent; review and send it manually."}
+    out.update(app="Outlook", route="applescript", attachments_in_draft=in_draft == len(files), files_in_draft=in_draft)
+    if in_draft == len(files):
+        out["note"] = (f"A draft window was opened in Outlook with {in_draft} attachment(s). "
+                       "Nothing was sent; review and send it manually.")
+    else:
+        for f in files:
+            reveal(f["path"])
+        out["note"] = (f"A draft window was opened in Outlook, but it holds {in_draft} of {len(files)} attachments. "
+                       "The files are shown in Finder; drag in any that are missing. "
+                       "Nothing was sent; review and send it manually.")
+    return out
 
 
 def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:

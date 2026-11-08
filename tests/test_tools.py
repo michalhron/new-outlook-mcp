@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import pytest
@@ -163,3 +164,61 @@ def test_open_in_outlook_targets_outlook_and_falls_back(monkeypatch):
     fail = True
     assert tools._open_in_outlook("mailto:a@example.org") == "the default mail app"
     assert calls[-1] == ["open", "mailto:a@example.org"]
+
+
+def _stub_draft(tmp_path, **kwargs):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4 x")
+    calls = {"opened": [], "revealed": [], "script": []}
+
+    def scripter(args):
+        calls["script"].append(args)
+        return kwargs.get("in_draft", 1)
+
+    def failing(args):
+        raise tools.DraftScriptError("Outlook said no")
+
+    res = tools.create_draft(["a@example.org"], cc=["c@example.org"], subject="S\nT", body="B", attachments=[str(pdf)],
+                             opener=calls["opened"].append, revealer=calls["revealed"].append,
+                             scripter=failing if kwargs.get("fail") else scripter)
+    return res, calls, pdf
+
+
+def test_create_draft_attaches_through_applescript(tmp_path):
+    res, calls, pdf = _stub_draft(tmp_path)
+    assert res["route"] == "applescript" and res["attachments_in_draft"] is True
+    assert res["attachments"] == [{"path": str(pdf), "name": "a.pdf", "size_bytes": 10}]
+    assert calls["script"][0] == ["S T", "B", "1", "1", "0", "a@example.org", "c@example.org", str(pdf)]
+    assert not calls["opened"] and not calls["revealed"]
+
+
+def test_create_draft_falls_back_honestly_when_script_fails(tmp_path):
+    res, calls, pdf = _stub_draft(tmp_path, fail=True)
+    assert res["route"] == "mailto" and res["attachments_in_draft"] is False
+    assert "WITHOUT the attachments" in res["note"] and res["fallback_reason"] == "Outlook said no"
+    assert calls["opened"][0].startswith("mailto:") and calls["revealed"] == [str(pdf)]
+
+
+def test_create_draft_reports_a_partly_attached_draft(tmp_path):
+    res, calls, pdf = _stub_draft(tmp_path, in_draft=0)
+    assert res["attachments_in_draft"] is False and "holds 0 of 1" in res["note"]
+    assert calls["revealed"] == [str(pdf)]
+
+
+@pytest.mark.parametrize("path", ["relative.pdf", "/no/such/file.pdf", "/tmp"])
+def test_create_draft_rejects_bad_attachment_paths(path):
+    def forbidden(_):
+        raise AssertionError("must not open a draft")
+
+    with pytest.raises(tools.ToolInputError):
+        tools.create_draft(["a@example.org"], attachments=[path], opener=forbidden, scripter=forbidden)
+
+
+def test_draft_script_never_sends():
+    assert not re.search(r"\bsend\b", tools.DRAFT_SCRIPT, re.I)
+
+
+def test_create_draft_without_attachments_stays_on_mailto():
+    opened = []
+    res = tools.create_draft(["a@example.org"], subject="S", opener=opened.append)
+    assert res["route"] == "mailto" and "attachments" not in res and len(opened) == 1

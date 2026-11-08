@@ -330,11 +330,13 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
         body: Annotated[str, Field(description="Plain-text body")] = "",
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        attachments: Annotated[list[str] | None, Field(description="Absolute paths of local files to attach")] = None,
     ) -> dict:
-        """Open a prefilled draft in Outlook via a mailto: link, even if another app is the default mail app.
-        It never sends: the user reviews and sends the draft manually."""
+        """Open a prefilled draft in Outlook, even if another app is the default mail app. It never sends: the
+        user reviews and sends the draft manually. `route` says how it was opened and `attachments_in_draft`
+        whether the files really are in it. If that is false, tell the user to drag them in from Finder."""
         try:
-            return tools.create_draft(to, cc=cc, bcc=bcc, subject=subject, body=body)
+            return tools.create_draft(to, cc=cc, bcc=bcc, subject=subject, body=body, attachments=attachments)
         except tools.ToolInputError as exc:
             raise ToolError(str(exc)) from exc
 

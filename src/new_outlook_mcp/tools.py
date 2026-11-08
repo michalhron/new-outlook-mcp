@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -16,13 +17,14 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import attachments as att_mod
-from . import privacy, realms
+from . import config, privacy, realms
 from .db import Archive, normalize_subject
 from .model import normalize_message_id
 
 MAX_LIMIT = 200
 DEFAULT_BODY_CHARS = 8000
 MAX_MAILTO_LENGTH = 30000
+DEFAULT_STALE_HOURS = 6.0
 
 
 class ToolInputError(ValueError):
@@ -193,9 +195,111 @@ def _with_scope(out: dict, realm: str | None) -> dict:
     return out
 
 
+def stale_after_hours() -> float:
+    """Hours after the last sync before results get a warning: $NEW_OUTLOOK_STALE_HOURS,
+    else `stale_after_hours` in the [sync] table of config.toml, else the default."""
+    try:
+        raw = os.environ.get("NEW_OUTLOOK_STALE_HOURS") or config.load_config().get("sync", {}).get("stale_after_hours")
+        hours = float(raw) if raw is not None else DEFAULT_STALE_HOURS
+    except (OSError, TypeError, ValueError):
+        return DEFAULT_STALE_HOURS
+    return hours if hours > 0 else DEFAULT_STALE_HOURS
+
+
+def _ago(seconds: float) -> str:
+    minutes = max(0, int(seconds)) // 60
+    if minutes < 120:
+        return f"{minutes} minute{'' if minutes == 1 else 's'} ago"
+    if minutes < 2880:
+        return f"{minutes // 60} hours ago"
+    return f"{minutes // 1440} days ago"
+
+
+def _utc_label(iso: str | None) -> str:
+    ts = _parse_ts(iso)
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if ts is not None else "unknown"
+
+
+def _failure_reason(message: str | None) -> str:
+    head = (message or "").split(":", 1)[0].strip()
+    if head == "PermissionError":
+        return "PermissionError (Full Disk Access)"
+    if re.fullmatch(r"\w*(Error|Exception)", head):
+        return head
+    return (message or "unknown error")[:120]
+
+
+def _newest_message(archive: Archive, now: float) -> str | None:
+    """Newest visible message date. Later than tomorrow means a placeholder date, so those are skipped."""
+    conn = archive.conn
+    vis, params = privacy.message_visible(conn)
+    where = [vis, "m.date_ts <= ?"]
+    params = [*params, int(now) + 86400]
+    if realms.fence() not in (None, "all"):
+        where.append(realms.message_in_accounts_sql("m", realms.account_ids(conn, realms.fence())))
+    return conn.execute(f"SELECT MAX(m.date_utc) FROM messages m WHERE {' AND '.join(where)}", params).fetchone()[0]
+
+
+def freshness(archive: Archive, *, now: float | None = None, stale_hours: float | None = None) -> dict:
+    """How current the archive is, so a stale archive never looks like an empty result.
+
+    `warning` is set when the live mail source failed its last sync or has not synced for `stale_hours`.
+    The live source is hxstore: the legacy archive is frozen, so its age says nothing about new mail.
+    """
+    now = time.time() if now is None else now
+    hours = stale_after_hours() if stale_hours is None else stale_hours
+    sources: dict[str, dict] = {}
+    for r in archive.conn.execute(
+        """SELECT r.source, r.status, COALESCE(r.finished_at, r.started_at) AS at, r.message,
+                  (SELECT MAX(COALESCE(s.finished_at, s.started_at)) FROM sync_runs s
+                   WHERE s.source = r.source AND s.status IN ('ok', 'warning')) AS last_success
+           FROM sync_runs r
+           JOIN (SELECT source, MAX(id) AS id FROM sync_runs WHERE status != 'running' GROUP BY source) x
+             ON x.id = r.id"""):
+        sources[r["source"]] = {"last_successful_sync": r["last_success"], "last_attempt": r["at"],
+                                "last_attempt_status": r["status"]}
+        if r["status"] == "error":
+            sources[r["source"]]["last_error"] = _failure_reason(r["message"])
+    out: dict = {"newest_message": _newest_message(archive, now), "stale_after_hours": hours, "sources": sources}
+
+    watched = ["hxstore"] if "hxstore" in sources else list(sources)
+    synced = [t for t in (_parse_ts(sources[s]["last_successful_sync"]) for s in watched) if t is not None]
+    last = max(synced) if synced else None
+    failed = [s for s in watched if "last_error" in sources[s]]
+    parts = []
+    if last is None:
+        parts.append("Archive has no successful sync on record; results may be missing mail.")
+    elif now - last > hours * 3600:
+        label = datetime.fromtimestamp(last, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        parts.append(f"Archive last synced {label} ({_ago(now - last)}); results may be missing newer mail.")
+    for s in failed:
+        parts.append(f"Last sync attempt failed ({s}, {_utc_label(sources[s]['last_attempt'])}): {sources[s]['last_error']}.")
+    if parts:
+        parts.append("Run diagnose for the fix." if failed else "Run sync_now.")
+        out["warning"] = " ".join(parts)
+    return out
+
+
+def _with_freshness(out: dict, archive: Archive) -> dict:
+    info = freshness(archive)
+    warning = info.pop("warning", None)
+    out["freshness"] = info
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+def _with_warning(out: dict, archive: Archive) -> dict:
+    """For single messages and threads: only say something when the archive may be missing newer mail."""
+    warning = freshness(archive).get("warning")
+    if warning:
+        out["warning"] = warning
+    return out
+
+
 def search_emails(archive: Archive, query: str | None = None, *, realm: str | None = None, **kwargs) -> dict:
     """Search archived mail. Without `realm`, covers the default realm (see realms.default_view)."""
-    return _with_scope(_search_emails(archive, query, realm=realm, **kwargs), realm)
+    return _with_freshness(_with_scope(_search_emails(archive, query, realm=realm, **kwargs), realm), archive)
 
 
 def _search_emails(
@@ -329,7 +433,7 @@ def get_email(
         out["next_offset"] = offset + len(chunk)
     if include_headers:
         out["headers"] = row["headers"]
-    return out
+    return _with_warning(out, archive)
 
 
 def get_thread(
@@ -399,7 +503,8 @@ def get_thread(
             "body": body[: max(0, int(body_chars))],
             "body_truncated": len(body) > body_chars,
         })
-    return {"thread_size": total, "returned": len(messages), "matched_by": method, "messages": messages}
+    return _with_warning({"thread_size": total, "returned": len(messages), "matched_by": method, "messages": messages},
+                         archive)
 
 
 def list_recent(
@@ -828,7 +933,8 @@ def create_draft(
 
 
 def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:
-    return _with_scope(_semantic_search(archive, query, mode=mode, limit=limit, **filters), filters.get("realm"))
+    out = _with_scope(_semantic_search(archive, query, mode=mode, limit=limit, **filters), filters.get("realm"))
+    return _with_freshness(out, archive)
 
 
 def _semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:

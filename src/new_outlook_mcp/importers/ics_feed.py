@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 class IcsFeedImporter(Importer):
     name = "ics"
     expect_records = False
+    optional = True
     expect_events = False  # a 304 legitimately yields nothing
 
     def __init__(self, source_path: Path | None = None, *, feeds: list[feeds_mod.Feed] | None = None, opener=None):

@@ -54,3 +54,8 @@ def test_notify_is_noop_off_macos(monkeypatch):
 
     monkeypatch.setattr(notify.sys, "platform", "linux")
     assert notify.notify("t", "m") is False
+
+
+def test_sync_explicit_optional_source_is_not_a_failure(tmp_path, capsys):
+    rc = cli.main(["--db", str(tmp_path / "x.db"), "sync", "--source", "ics"])
+    assert rc == 0 and "not_configured" in capsys.readouterr().out

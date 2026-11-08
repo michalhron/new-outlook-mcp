@@ -43,6 +43,7 @@ class Importer(ABC):
     #: When True, a run that yields zero records is treated as suspicious
     #: (possible format drift) if earlier runs produced records.
     expect_records: bool = True
+    optional: bool = False  # a source the user may never set up: absence is not a problem
 
     def __init__(self, source_path: Path):
         self.source_path = Path(source_path)

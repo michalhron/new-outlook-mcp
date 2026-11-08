@@ -34,6 +34,8 @@ cache that no archived message owns. Calendar tools work on the user's own calen
 When the user has assigned accounts to realms, results carry a `realm` (work,
 private or unassigned) and searches cover work mail by default. Pass
 realm="private" or realm="all" only when the user asks about private mail.
+A result with a `warning` field may be missing newer mail: tell the user, do not
+treat an empty result as proof that a message does not exist.
 Nothing here can send mail, answer invitations, or change calendar events.
 create_draft and create_event_draft only open a draft that the user reviews
 and sends or saves themselves.
@@ -77,12 +79,21 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
             description="keyword: exact words (default). semantic: by meaning. hybrid: both, fused. "
                         "semantic and hybrid need `new-outlook embed` to have been run")] = "keyword",
         realm: RealmParam = None,
+        sync_first: Annotated[bool, Field(
+            description="Import new mail from Outlook's local cache before searching; reported in `sync_first`. "
+                        "Takes a few seconds")] = False,
     ) -> dict:
-        """Search archived emails. Returns summaries with an `id` for get_email/get_thread."""
-        return call(tools.search_emails, query, from_=sender, to=recipient, folder=folder, account=account,
-                    date_from=date_from, date_to=date_to, has_attachment=has_attachment,
-                    attachment_name=attachment_name, sort=sort, limit=limit, offset=offset, mode=mode,
-                    realm=realm)
+        """Search archived emails. Returns summaries with an `id` for get_email/get_thread. `freshness` says how
+        current the archive is. If `warning` is present the archive may be missing newer mail: tell the user."""
+        synced = sync(archive(), ["hxstore"]) if sync_first else None
+        out = call(tools.search_emails, query, from_=sender, to=recipient, folder=folder, account=account,
+                   date_from=date_from, date_to=date_to, has_attachment=has_attachment,
+                   attachment_name=attachment_name, sort=sort, limit=limit, offset=offset, mode=mode,
+                   realm=realm)
+        if synced is not None:
+            out["sync_first"] = [{"source": r.source, "status": r.status, "new": r.inserted,
+                                  "message": r.message[:300]} for r in synced]
+        return out
 
     @server.tool(annotations=READ_ONLY)
     def semantic_search(
@@ -146,7 +157,7 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
         days: Annotated[int | None, Field(ge=1, description="Only messages from the last N days")] = None,
         realm: RealmParam = None,
     ) -> dict:
-        """List the newest archived emails."""
+        """List the newest archived emails. `freshness` and `warning` work as in search_emails."""
         return call(tools.list_recent, limit=limit, folder=folder, account=account, days=days, realm=realm)
 
     @server.tool(annotations=READ_ONLY)
@@ -319,11 +330,13 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
         body: Annotated[str, Field(description="Plain-text body")] = "",
         cc: list[str] | None = None,
         bcc: list[str] | None = None,
+        attachments: Annotated[list[str] | None, Field(description="Absolute paths of local files to attach")] = None,
     ) -> dict:
-        """Open a prefilled draft in Outlook via a mailto: link, even if another app is the default mail app.
-        It never sends: the user reviews and sends the draft manually."""
+        """Open a prefilled draft in Outlook, even if another app is the default mail app. It never sends: the
+        user reviews and sends the draft manually. `route` says how it was opened and `attachments_in_draft`
+        whether the files really are in it. If that is false, tell the user to drag them in from Finder."""
         try:
-            return tools.create_draft(to, cc=cc, bcc=bcc, subject=subject, body=body)
+            return tools.create_draft(to, cc=cc, bcc=bcc, subject=subject, body=body, attachments=attachments)
         except tools.ToolInputError as exc:
             raise ToolError(str(exc)) from exc
 

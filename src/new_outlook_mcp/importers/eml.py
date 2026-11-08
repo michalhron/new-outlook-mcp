@@ -118,6 +118,7 @@ def eml_files(folder: Path) -> list[Path]:
 class EmlImporter(Importer):
     name = "eml"
     expect_records = False  # a folder that only grows when you read mail can legitimately add nothing
+    optional = True
 
     def __init__(self, source_path: Path | None = None, *, folders: list[EmlFolder] | None = None):
         super().__init__(source_path or config_path())

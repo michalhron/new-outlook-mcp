@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -16,13 +17,14 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import attachments as att_mod
-from . import privacy, realms
+from . import config, privacy, realms
 from .db import Archive, normalize_subject
 from .model import normalize_message_id
 
 MAX_LIMIT = 200
 DEFAULT_BODY_CHARS = 8000
 MAX_MAILTO_LENGTH = 30000
+DEFAULT_STALE_HOURS = 6.0
 
 
 class ToolInputError(ValueError):
@@ -193,9 +195,111 @@ def _with_scope(out: dict, realm: str | None) -> dict:
     return out
 
 
+def stale_after_hours() -> float:
+    """Hours after the last sync before results get a warning: $NEW_OUTLOOK_STALE_HOURS,
+    else `stale_after_hours` in the [sync] table of config.toml, else the default."""
+    try:
+        raw = os.environ.get("NEW_OUTLOOK_STALE_HOURS") or config.load_config().get("sync", {}).get("stale_after_hours")
+        hours = float(raw) if raw is not None else DEFAULT_STALE_HOURS
+    except (OSError, TypeError, ValueError):
+        return DEFAULT_STALE_HOURS
+    return hours if hours > 0 else DEFAULT_STALE_HOURS
+
+
+def _ago(seconds: float) -> str:
+    minutes = max(0, int(seconds)) // 60
+    if minutes < 120:
+        return f"{minutes} minute{'' if minutes == 1 else 's'} ago"
+    if minutes < 2880:
+        return f"{minutes // 60} hours ago"
+    return f"{minutes // 1440} days ago"
+
+
+def _utc_label(iso: str | None) -> str:
+    ts = _parse_ts(iso)
+    return datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M UTC") if ts is not None else "unknown"
+
+
+def _failure_reason(message: str | None) -> str:
+    head = (message or "").split(":", 1)[0].strip()
+    if head == "PermissionError":
+        return "PermissionError (Full Disk Access)"
+    if re.fullmatch(r"\w*(Error|Exception)", head):
+        return head
+    return (message or "unknown error")[:120]
+
+
+def _newest_message(archive: Archive, now: float) -> str | None:
+    """Newest visible message date. Later than tomorrow means a placeholder date, so those are skipped."""
+    conn = archive.conn
+    vis, params = privacy.message_visible(conn)
+    where = [vis, "m.date_ts <= ?"]
+    params = [*params, int(now) + 86400]
+    if realms.fence() not in (None, "all"):
+        where.append(realms.message_in_accounts_sql("m", realms.account_ids(conn, realms.fence())))
+    return conn.execute(f"SELECT MAX(m.date_utc) FROM messages m WHERE {' AND '.join(where)}", params).fetchone()[0]
+
+
+def freshness(archive: Archive, *, now: float | None = None, stale_hours: float | None = None) -> dict:
+    """How current the archive is, so a stale archive never looks like an empty result.
+
+    `warning` is set when the live mail source failed its last sync or has not synced for `stale_hours`.
+    The live source is hxstore: the legacy archive is frozen, so its age says nothing about new mail.
+    """
+    now = time.time() if now is None else now
+    hours = stale_after_hours() if stale_hours is None else stale_hours
+    sources: dict[str, dict] = {}
+    for r in archive.conn.execute(
+        """SELECT r.source, r.status, COALESCE(r.finished_at, r.started_at) AS at, r.message,
+                  (SELECT MAX(COALESCE(s.finished_at, s.started_at)) FROM sync_runs s
+                   WHERE s.source = r.source AND s.status IN ('ok', 'warning')) AS last_success
+           FROM sync_runs r
+           JOIN (SELECT source, MAX(id) AS id FROM sync_runs WHERE status != 'running' GROUP BY source) x
+             ON x.id = r.id"""):
+        sources[r["source"]] = {"last_successful_sync": r["last_success"], "last_attempt": r["at"],
+                                "last_attempt_status": r["status"]}
+        if r["status"] == "error":
+            sources[r["source"]]["last_error"] = _failure_reason(r["message"])
+    out: dict = {"newest_message": _newest_message(archive, now), "stale_after_hours": hours, "sources": sources}
+
+    watched = ["hxstore"] if "hxstore" in sources else list(sources)
+    synced = [t for t in (_parse_ts(sources[s]["last_successful_sync"]) for s in watched) if t is not None]
+    last = max(synced) if synced else None
+    failed = [s for s in watched if "last_error" in sources[s]]
+    parts = []
+    if last is None:
+        parts.append("Archive has no successful sync on record; results may be missing mail.")
+    elif now - last > hours * 3600:
+        label = datetime.fromtimestamp(last, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        parts.append(f"Archive last synced {label} ({_ago(now - last)}); results may be missing newer mail.")
+    for s in failed:
+        parts.append(f"Last sync attempt failed ({s}, {_utc_label(sources[s]['last_attempt'])}): {sources[s]['last_error']}.")
+    if parts:
+        parts.append("Run diagnose for the fix." if failed else "Run sync_now.")
+        out["warning"] = " ".join(parts)
+    return out
+
+
+def _with_freshness(out: dict, archive: Archive) -> dict:
+    info = freshness(archive)
+    warning = info.pop("warning", None)
+    out["freshness"] = info
+    if warning:
+        out["warning"] = warning
+    return out
+
+
+def _with_warning(out: dict, archive: Archive) -> dict:
+    """For single messages and threads: only say something when the archive may be missing newer mail."""
+    warning = freshness(archive).get("warning")
+    if warning:
+        out["warning"] = warning
+    return out
+
+
 def search_emails(archive: Archive, query: str | None = None, *, realm: str | None = None, **kwargs) -> dict:
     """Search archived mail. Without `realm`, covers the default realm (see realms.default_view)."""
-    return _with_scope(_search_emails(archive, query, realm=realm, **kwargs), realm)
+    return _with_freshness(_with_scope(_search_emails(archive, query, realm=realm, **kwargs), realm), archive)
 
 
 def _search_emails(
@@ -329,7 +433,7 @@ def get_email(
         out["next_offset"] = offset + len(chunk)
     if include_headers:
         out["headers"] = row["headers"]
-    return out
+    return _with_warning(out, archive)
 
 
 def get_thread(
@@ -399,7 +503,8 @@ def get_thread(
             "body": body[: max(0, int(body_chars))],
             "body_truncated": len(body) > body_chars,
         })
-    return {"thread_size": total, "returned": len(messages), "matched_by": method, "messages": messages}
+    return _with_warning({"thread_size": total, "returned": len(messages), "matched_by": method, "messages": messages},
+                         archive)
 
 
 def list_recent(
@@ -747,6 +852,15 @@ def search_files(
     return out
 
 
+def _addresses(value: list[str] | str | None) -> list[str]:
+    items = (value if isinstance(value, list) else re.split(r"[,;]", value)) if value else []
+    out = [i.strip() for i in items if i and i.strip()]
+    for addr in out:
+        if "@" not in addr or any(c in addr for c in "\r\n"):
+            raise ToolInputError(f"invalid email address: {addr!r}")
+    return out
+
+
 def build_mailto(
     to: list[str] | str | None = None,
     *,
@@ -757,19 +871,10 @@ def build_mailto(
 ) -> str:
     """Build an RFC 6068 mailto: URL."""
 
-    def norm(v: list[str] | str | None) -> list[str]:
-        if not v:
-            return []
-        items = v if isinstance(v, list) else re.split(r"[,;]", v)
-        return [i.strip() for i in items if i and i.strip()]
-
     def enc(s: str) -> str:
         return quote(s, safe="")
 
-    to_l, cc_l, bcc_l = norm(to), norm(cc), norm(bcc)
-    for addr in to_l + cc_l + bcc_l:
-        if "@" not in addr or any(c in addr for c in "\r\n"):
-            raise ToolInputError(f"invalid email address: {addr!r}")
+    to_l, cc_l, bcc_l = _addresses(to), _addresses(cc), _addresses(bcc)
     url = "mailto:" + ",".join(quote(a, safe="@") for a in to_l)
     q = []
     if cc_l:
@@ -803,6 +908,84 @@ def _open_in_outlook(target: str) -> str:
         return "the default mail app"
 
 
+# Builds a draft and shows it. There is deliberately no send command here: the user sends it.
+DRAFT_SCRIPT = """
+on fileRef(p)
+    return POSIX file p
+end fileRef
+
+on run argv
+    set toCount to (item 3 of argv) as integer
+    set ccCount to (item 4 of argv) as integer
+    set bccCount to (item 5 of argv) as integer
+    set i to 6
+    tell application "Microsoft Outlook"
+        set m to make new outgoing message with properties {subject:(item 1 of argv), plain text content:(item 2 of argv)}
+        repeat toCount times
+            make new to recipient at m with properties {email address:{address:(item i of argv)}}
+            set i to i + 1
+        end repeat
+        repeat ccCount times
+            make new cc recipient at m with properties {email address:{address:(item i of argv)}}
+            set i to i + 1
+        end repeat
+        repeat bccCount times
+            make new bcc recipient at m with properties {email address:{address:(item i of argv)}}
+            set i to i + 1
+        end repeat
+        repeat while i <= (count of argv)
+            make new attachment at m with properties {file:my fileRef(item i of argv)}
+            set i to i + 1
+        end repeat
+        set attached to count of attachments of m
+        open m
+        activate
+    end tell
+    return attached
+end run
+"""
+
+ATTACHMENT_WARN_BYTES = 25 * 1024 * 1024
+
+
+class DraftScriptError(RuntimeError):
+    pass
+
+
+def _run_draft_script(args: list[str]) -> int:
+    """Create the draft through Outlook's AppleScript interface. Returns how many files it holds."""
+    try:
+        # "-" reads the script from stdin and ends option parsing, so a body starting with "-" is safe.
+        proc = subprocess.run(["osascript", "-", *args], input=DRAFT_SCRIPT, capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise DraftScriptError(f"{type(exc).__name__}") from exc
+    if proc.returncode != 0:
+        detail = proc.stderr.strip()[:300]
+        if "-1743" in detail:
+            detail = "macOS has not allowed this program to control Microsoft Outlook (Privacy & Security > Automation)"
+        raise DraftScriptError(detail)
+    try:
+        return int(proc.stdout.strip())
+    except ValueError as exc:
+        raise DraftScriptError(f"unexpected reply from Outlook: {proc.stdout.strip()[:80]!r}") from exc
+
+
+def _reveal_in_finder(path: str) -> None:
+    subprocess.run(["open", "-R", path], check=False, timeout=30, capture_output=True)
+
+
+def _check_attachments(paths: list[str] | None) -> list[dict]:
+    files = []
+    for raw in paths or []:
+        p = Path(raw)
+        if not p.is_absolute():
+            raise ToolInputError(f"attachment path must be absolute: {raw!r}")
+        if not p.is_file():
+            raise ToolInputError(f"attachment not found or not a file: {raw!r}")
+        files.append({"path": str(p), "name": p.name, "size_bytes": p.stat().st_size})
+    return files
+
+
 def create_draft(
     to: list[str] | str | None = None,
     *,
@@ -810,25 +993,70 @@ def create_draft(
     bcc: list[str] | str | None = None,
     subject: str | None = None,
     body: str | None = None,
+    attachments: list[str] | None = None,
     opener: Callable[[str], str | None] | None = None,
+    scripter: Callable[[list[str]], int] | None = None,
+    revealer: Callable[[str], None] | None = None,
 ) -> dict:
-    """Open a prefilled draft in Outlook. Never sends anything."""
+    """Open a draft in Outlook for the user to review. Never sends anything.
+
+    With attachments the draft is built through Outlook's AppleScript interface. If that fails it opens a
+    mailto: draft and reveals the files in Finder, and the result says they are not attached.
+    """
+    files = _check_attachments(attachments)
     url = build_mailto(to, cc=cc, bcc=bcc, subject=subject, body=body)
-    if len(url) > MAX_MAILTO_LENGTH:
-        raise ToolInputError(
-            f"draft is too long for a mailto: link ({len(url)} > {MAX_MAILTO_LENGTH} chars). Shorten the body."
-        )
-    app = (opener or _open_in_outlook)(url) or "Outlook"
-    return {
-        "opened": True,
-        "app": app,
-        "note": f"A draft window was opened in {app}. Nothing was sent; review and send it manually.",
-        "mailto_length": len(url),
-    }
+    reveal = revealer or _reveal_in_finder
+
+    def open_mailto() -> str:
+        if len(url) > MAX_MAILTO_LENGTH:
+            raise ToolInputError(
+                f"draft is too long for a mailto: link ({len(url)} > {MAX_MAILTO_LENGTH} chars). Shorten the body."
+            )
+        return (opener or _open_in_outlook)(url) or "Outlook"
+
+    if not files:
+        app = open_mailto()
+        return {
+            "opened": True,
+            "app": app,
+            "route": "mailto",
+            "note": f"A draft window was opened in {app}. Nothing was sent; review and send it manually.",
+            "mailto_length": len(url),
+        }
+
+    out: dict = {"opened": True, "attachments": files}
+    total = sum(f["size_bytes"] for f in files)
+    if total > ATTACHMENT_WARN_BYTES:
+        out["size_warning"] = f"Attachments total {total // (1024 * 1024)} MB; the mail server may refuse a message this large."
+    args = [(subject or "").replace("\r", " ").replace("\n", " "), (body or "").replace("\r\n", "\n"),
+            *(str(len(_addresses(v))) for v in (to, cc, bcc)),
+            *_addresses(to), *_addresses(cc), *_addresses(bcc), *(f["path"] for f in files)]
+    try:
+        in_draft = (scripter or _run_draft_script)(args)
+    except DraftScriptError as exc:
+        app = open_mailto()
+        for f in files:
+            reveal(f["path"])
+        return {**out, "app": app, "route": "mailto", "attachments_in_draft": False, "fallback_reason": str(exc),
+                "note": f"A draft window was opened in {app}, WITHOUT the attachments: they could not be added "
+                        "automatically. The files are shown in Finder; drag them into the draft. "
+                        "Nothing was sent; review and send it manually."}
+    out.update(app="Outlook", route="applescript", attachments_in_draft=in_draft == len(files), files_in_draft=in_draft)
+    if in_draft == len(files):
+        out["note"] = (f"A draft window was opened in Outlook with {in_draft} attachment(s). "
+                       "Nothing was sent; review and send it manually.")
+    else:
+        for f in files:
+            reveal(f["path"])
+        out["note"] = (f"A draft window was opened in Outlook, but it holds {in_draft} of {len(files)} attachments. "
+                       "The files are shown in Finder; drag in any that are missing. "
+                       "Nothing was sent; review and send it manually.")
+    return out
 
 
 def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:
-    return _with_scope(_semantic_search(archive, query, mode=mode, limit=limit, **filters), filters.get("realm"))
+    out = _with_scope(_semantic_search(archive, query, mode=mode, limit=limit, **filters), filters.get("realm"))
+    return _with_freshness(out, archive)
 
 
 def _semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:

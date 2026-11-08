@@ -60,7 +60,7 @@ The full walk-through, including the macOS permission prompt and Claude Desktop,
 | Mail | `search_emails`, `semantic_search`, `find_similar`, `get_email`, `get_thread`, `list_recent`, `list_folders` |
 | Attachments | `list_attachments`, `get_attachment`, `search_files` |
 | Calendar | `list_calendar_events`, `get_calendar_event`, `search_calendar`, `calendar_freebusy`, `find_free_slots`, `meeting_prep` |
-| Drafts | `create_draft` (opens a `mailto:` draft), `create_event_draft` (opens an `.ics` file) |
+| Drafts | `create_draft` (opens a draft in Outlook, with attachments if you give any), `create_event_draft` (opens an `.ics` file) |
 | Status | `archive_status`, `sync_now`, `diagnose` |
 
 Parameters and examples: [docs/tools.md](docs/tools.md).

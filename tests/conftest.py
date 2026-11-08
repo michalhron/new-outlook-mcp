@@ -20,6 +20,8 @@ def _isolate_home(tmp_path, monkeypatch):
     monkeypatch.setenv("NEW_OUTLOOK_HOME", str(tmp_path / "app"))
     monkeypatch.setenv("OUTLOOK_PROFILE_DIR", str(tmp_path / "profile-missing"))
     monkeypatch.setenv("NEW_OUTLOOK_LOG_DIR", str(tmp_path / "logs"))
+    # launchd.install/uninstall address agents by label, so a real launchctl would unload the user's own.
+    monkeypatch.setattr("new_outlook_mcp.launchd.subprocess.run", lambda *a, **k: None)
 
 
 @pytest.fixture

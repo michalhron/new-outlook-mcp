@@ -121,27 +121,15 @@ def subprocess_runner(db: Path | None = None, *, timeout: float = DEFAULT_TIMEOU
 
 
 def watch_sources() -> str:
-    """Sources each watcher sync imports: HxStore, plus .eml folders once one is configured."""
-    from .importers.eml import EmlConfigError, load_folders
-
-    try:
-        return SYNC_SOURCES + (",eml" if load_folders() else "")
-    except EmlConfigError:
-        return SYNC_SOURCES + ",eml"  # let the sync report the config error
+    """Sources each watcher sync imports."""
+    return SYNC_SOURCES
 
 
 def watch_targets(hxstore: Path | None = None) -> list[Path]:
-    """HxStore.hxd, hxcore.hfl and the Files/ folder next to it, plus configured .eml folders."""
+    """HxStore.hxd, hxcore.hfl and the Files/ folder next to it."""
     store = hxstore or paths.hxstore_path()
     base = store.parent
-    targets = [store, base / "hxcore.hfl", base / "Files"]
-    from .importers.eml import EmlConfigError, load_folders
-
-    try:
-        targets += [f.path for f in load_folders()]
-    except EmlConfigError:
-        pass  # the sync reports the config error
-    return targets
+    return [store, base / "hxcore.hfl", base / "Files"]
 
 
 def fingerprint(path: Path) -> tuple | None:

@@ -6,7 +6,6 @@ from pathlib import Path
 
 from .. import paths
 from .base import Importer, ImportStats
-from .eml import EmlImporter
 from .hxstore import HxStoreImporter
 from .ics_feed import IcsFeedImporter
 from .legacy import LegacyImporter
@@ -15,7 +14,6 @@ IMPORTERS: dict[str, type[Importer]] = {
     "legacy": LegacyImporter,
     "hxstore": HxStoreImporter,
     "ics": IcsFeedImporter,
-    "eml": EmlImporter,
 }
 
 
@@ -24,7 +22,7 @@ def default_source_path(name: str) -> Path:
         return paths.legacy_data_dir()
     if name == "hxstore":
         return paths.hxstore_path()
-    if name in ("ics", "eml"):
+    if name == "ics":
         from ..config import config_path
 
         return config_path()

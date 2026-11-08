@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import attachments as att_mod
-from . import config, privacy, realms
+from . import config, privacy
 from .db import Archive, normalize_subject
 from .model import normalize_message_id
 
@@ -84,7 +84,7 @@ def _preview_only(row: sqlite3.Row) -> bool:
     return row["first_source"] == "hxstore" and not row["body_html"]
 
 
-def _summary(row: sqlite3.Row, snippet: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
+def _summary(row: sqlite3.Row, snippet: str | None = None) -> dict:
     to = json.loads(row["to_json"] or "[]")
     out = {
         "id": row["id"],
@@ -96,11 +96,6 @@ def _summary(row: sqlite3.Row, snippet: str | None = None, conn: sqlite3.Connect
         "account": row["account"],
         "has_attachment": bool(row["has_attachment"]),
     }
-    realm_map = realms.load_realms()
-    if realms.configured(realm_map):
-        held = realms.realms_of_message(conn, row["id"], realm_map) if conn is not None else []
-        # Merged mail held in both realms reads "work+private".
-        out["realm"] = "+".join(held) if len(held) > 1 else (realms.realm_of(row["account"], realm_map) or "unassigned")
     if snippet is not None:
         out["snippet"] = snippet
     else:
@@ -148,7 +143,6 @@ def _filter_clauses(
     date_to: str | None = None,
     has_attachment: bool | None = None,
     attachment_name: str | None = None,
-    realm: str | None = None,
 ) -> tuple[list[str], list[object]]:
     """SQL conditions (over messages m, folders f, accounts a) shared by every search mode.
 
@@ -172,12 +166,6 @@ def _filter_clauses(
     if account:
         where.append("a.name LIKE ? ESCAPE '\\'")
         params.append(_like(account))
-    realm = realm or realms.default_view()
-    if realm not in realms.FENCES:
-        raise ToolInputError(f"realm must be one of {', '.join(realms.FENCES)}")
-    if realm != "all":
-        ids = realms.account_ids(archive.conn, realm)
-        where.append(realms.message_in_accounts_sql("m", ids))
     lo, hi = _parse_date(date_from), _parse_date(date_to, end=True)
     if lo is not None:
         where.append("m.date_ts >= ?")
@@ -193,17 +181,6 @@ def _filter_clauses(
     params += vparams
 
     return where, params
-
-
-def _with_scope(out: dict, realm: str | None) -> dict:
-    """Say which realm a search covered, once realms are configured."""
-    table = realms.load_realms()
-    if realms.configured(table):
-        scope = realm or realms.default_view(table)
-        out["realm_searched"] = scope
-        if scope != "all":
-            out["realm_note"] = f"Covers {scope} mail only. Pass realm='all' (or the other realm) to include the rest."
-    return out
 
 
 def stale_after_hours() -> float:
@@ -246,8 +223,6 @@ def _newest_message(archive: Archive, now: float) -> str | None:
     vis, params = privacy.message_visible(conn)
     where = [vis, "m.date_ts <= ?"]
     params = [*params, int(now) + 86400]
-    if realms.fence() not in (None, "all"):
-        where.append(realms.message_in_accounts_sql("m", realms.account_ids(conn, realms.fence())))
     return conn.execute(f"SELECT MAX(m.date_utc) FROM messages m WHERE {' AND '.join(where)}", params).fetchone()[0]
 
 
@@ -308,9 +283,9 @@ def _with_warning(out: dict, archive: Archive) -> dict:
     return out
 
 
-def search_emails(archive: Archive, query: str | None = None, *, realm: str | None = None, **kwargs) -> dict:
-    """Search archived mail. Without `realm`, covers the default realm (see realms.default_view)."""
-    return _with_freshness(_with_scope(_search_emails(archive, query, realm=realm, **kwargs), realm), archive)
+def search_emails(archive: Archive, query: str | None = None, **kwargs) -> dict:
+    """Search archived mail."""
+    return _with_freshness(_search_emails(archive, query, **kwargs), archive)
 
 
 def _search_emails(
@@ -329,15 +304,13 @@ def _search_emails(
     limit: int = 20,
     offset: int = 0,
     mode: str = "keyword",
-    realm: str | None = None,
 ) -> dict:
     limit = _clamp_limit(limit)
     offset = max(0, int(offset))
     if mode not in ("keyword", "semantic", "hybrid"):
         raise ToolInputError("mode must be 'keyword', 'semantic' or 'hybrid'")
     where, params = _filter_clauses(archive, from_=from_, to=to, folder=folder, account=account, date_from=date_from,
-                                    date_to=date_to, has_attachment=has_attachment, attachment_name=attachment_name,
-                                    realm=realm)
+                                    date_to=date_to, has_attachment=has_attachment, attachment_name=attachment_name)
     fallback_note = None
     if mode == "semantic" or (mode == "hybrid" and (query or "").strip()):
         from . import semantic
@@ -379,7 +352,7 @@ def _search_emails(
             if not used:
                 raise ToolInputError("query has no searchable words") from None
             rows = archive.conn.execute(sql, [used, *params, limit, offset]).fetchall()
-        results = [_summary(r, r["snip"], archive.conn) for r in rows]
+        results = [_summary(r, r["snip"]) for r in rows]
     else:
         used = None
         order = "m.date_ts ASC" if sort == "date_asc" else "m.date_ts DESC"
@@ -390,7 +363,7 @@ def _search_emails(
             + f" ORDER BY {order} LIMIT ? OFFSET ?"
         )
         rows = archive.conn.execute(sql, [*params, limit, offset]).fetchall()
-        results = [_summary(r, conn=archive.conn) for r in rows]
+        results = [_summary(r) for r in rows]
     total = rows[0]["total"] if rows else 0
     out: dict = {"total": total, "offset": offset, "count": len(results), "results": results}
     if used is not None and used != query:
@@ -529,13 +502,12 @@ def list_recent(
     folder: str | None = None,
     account: str | None = None,
     days: int | None = None,
-    realm: str | None = None,
 ) -> dict:
     date_from = None
     if days:
         date_from = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
     res = search_emails(archive, None, folder=folder, account=account, date_from=date_from,
-                        sort="date_desc", limit=limit, realm=realm)
+                        sort="date_desc", limit=limit)
     return res
 
 
@@ -1150,15 +1122,12 @@ def create_reply_draft(
     notes = [out["note"], "This is a new message quoting the original, not a reply linked to its thread."]
     if include_quote and _preview_only(row):
         notes.append("Only a preview of the original was available to quote.")
-    if row["first_source"] == "eml":
-        notes.append("The original came from the HEY archive, but this draft will send from your Outlook account.")
     out["note"] = " ".join(notes)
     return out
 
 
 def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:
-    out = _with_scope(_semantic_search(archive, query, mode=mode, limit=limit, **filters), filters.get("realm"))
-    return _with_freshness(out, archive)
+    return _with_freshness(_semantic_search(archive, query, mode=mode, limit=limit, **filters), archive)
 
 
 def _semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:
@@ -1174,14 +1143,13 @@ def _semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limi
 
 
 def find_similar(archive: Archive, email_id: str | None = None, *, attachment_id: int | None = None,
-                 limit: int = 10, realm: str | None = None) -> dict:
-    """Messages or attachments that resemble an email or an attachment. Results cover `realm` (default realm)."""
+                 limit: int = 10) -> dict:
+    """Messages or attachments that resemble an email or an attachment."""
     from . import semantic
     from .embedder import SemanticUnavailable
 
     try:
-        return _with_scope(semantic.find_similar(archive, email_id=email_id, attachment_id=attachment_id,
-                                                 limit=limit, realm=realm), realm)
+        return semantic.find_similar(archive, email_id=email_id, attachment_id=attachment_id, limit=limit)
     except SemanticUnavailable as exc:
         raise ToolInputError(str(exc)) from exc
 

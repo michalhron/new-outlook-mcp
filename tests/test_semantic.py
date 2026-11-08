@@ -452,14 +452,14 @@ def test_status_flags_embeddings_from_older_chunking_rules(archive, corpus):
 
 def test_reranker_reorders_the_best_results(archive, corpus, monkeypatch):
     monkeypatch.setenv("NEW_OUTLOOK_RERANK", "fake")
-    out = semantic.semantic_search(archive, "quarterly budget numbers attached", mode="hybrid", realm="all")
+    out = semantic.semantic_search(archive, "quarterly budget numbers attached", mode="hybrid")
     assert out["reranked"] is True
     assert out["results"][0]["id"] == corpus["budget"]
 
 
 def test_search_without_reranker_is_unchanged(archive, corpus, monkeypatch):
     monkeypatch.setenv("NEW_OUTLOOK_RERANK", "off")
-    out = semantic.semantic_search(archive, "quarterly budget numbers attached", mode="hybrid", realm="all")
+    out = semantic.semantic_search(archive, "quarterly budget numbers attached", mode="hybrid")
     assert out["reranked"] is False and out["results"]
 
 
@@ -471,11 +471,11 @@ def test_reranker_failure_falls_back(archive, corpus, monkeypatch):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(semantic, "get_reranker", lambda: Broken())
-    out = semantic.semantic_search(archive, "budget", mode="hybrid", realm="all")
+    out = semantic.semantic_search(archive, "budget", mode="hybrid")
     assert out["reranked"] is False and out["results"]
 
 
 def test_date_sorted_search_is_not_reranked(archive, corpus, monkeypatch):
     monkeypatch.setenv("NEW_OUTLOOK_RERANK", "fake")
-    out = semantic.semantic_search(archive, "budget", mode="hybrid", sort="date_desc", realm="all")
+    out = semantic.semantic_search(archive, "budget", mode="hybrid", sort="date_desc")
     assert out["reranked"] is False

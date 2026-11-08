@@ -28,7 +28,7 @@ def _old_archive(path):
         CREATE TABLE message_sources (
             source TEXT NOT NULL, source_key TEXT NOT NULL, message_pk INTEGER NOT NULL,
             first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY (source, source_key));
-        INSERT INTO message_sources VALUES ('legacy', 'k1', 10, 't', 't'), ('eml', 'k2', 10, 't', 't');
+        INSERT INTO message_sources VALUES ('legacy', 'k1', 10, 't', 't'), ('ics', 'k2', 10, 't', 't');
         CREATE TABLE sync_runs (
             id INTEGER PRIMARY KEY, source TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
             status TEXT NOT NULL, seen INTEGER NOT NULL DEFAULT 0, inserted INTEGER NOT NULL DEFAULT 0,
@@ -54,7 +54,7 @@ def test_old_archive_is_upgraded_on_open(tmp_path):
         assert "chunks" in {r[0] for r in a.conn.execute("SELECT name FROM sqlite_master")}
         # The importer that created the message holds it in the message's account; the merged one is unknown yet.
         got = dict(a.conn.execute("SELECT source, account_id FROM message_sources"))
-        assert got == {"legacy": 1, "eml": None}
+        assert got == {"legacy": 1, "ics": None}
         # Old rows survive.
         assert a.conn.execute("SELECT dedup_key FROM messages").fetchone()[0] == "mid:a@x"
 

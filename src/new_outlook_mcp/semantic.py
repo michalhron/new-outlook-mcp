@@ -443,7 +443,7 @@ def _result(row: sqlite3.Row, *, score: float, vec: dict | None, kw: dict | None
         snippet = _trim(vec["text"])
     else:
         snippet = kw["snippet"] if kw and kw.get("snippet") else None
-    out = tools._summary(row, snippet, archive.conn)
+    out = tools._summary(row, snippet)
     out["score"] = round(score, 4)
     out["matched"] = "both" if vec and kw else ("semantic" if vec else "keyword")
     if vec:
@@ -526,7 +526,7 @@ def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit
 
 
 def find_similar(archive: Archive, *, email_id: str | None = None, attachment_id: int | str | None = None,
-                 limit: int = 10, realm: str | None = None) -> dict:
+                 limit: int = 10) -> dict:
     """Messages (best matching chunk each) whose content resembles an email or one attachment."""
     if (email_id is None) == (attachment_id is None):
         raise ToolInputError("give exactly one of email_id or attachment_id")
@@ -555,7 +555,7 @@ def find_similar(archive: Archive, *, email_id: str | None = None, attachment_id
         raise ToolInputError("this item has no embeddings yet (nothing to compare, or `new-outlook embed` has not "
                              "reached it). Run `new-outlook embed` and try again.")
     q = vecs.mean(axis=0)
-    where, params = tools._filter_clauses(archive, realm=realm)
+    where, params = tools._filter_clauses(archive)
     hits = _vector_hits(archive, store, q, where, params, max(100, limit * 5), skip=skip)[:limit]
     rows = _fetch_rows(archive, [h["pk"] for h in hits])
     results = [_result(rows[h["pk"]], score=h["score"], vec=h, kw=None, archive=archive)

@@ -20,10 +20,9 @@ from typing import Any
 import re
 import shutil
 import sqlite3
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from . import paths
-from . import realms as realms_mod
 from .config import load_config, save_config
 
 RULE_TYPES = ("accounts", "folders", "senders", "domains", "subject_keywords", "attachment_names", "recipients")
@@ -72,10 +71,6 @@ class Rules:
     subject_keywords: list[str] = field(default_factory=list)
     attachment_names: list[str] = field(default_factory=list)
     recipients: list[str] = field(default_factory=list)
-    #: Realm fence of this process ("work" or "private"), None for no fence. Query time only:
-    #: accounts outside the realm, accounts without a realm and mail without an account are hidden.
-    fence: str | None = None
-    realms: dict = field(default_factory=dict)
 
     @property
     def has_rules(self) -> bool:
@@ -83,7 +78,7 @@ class Rules:
 
     @property
     def active(self) -> bool:
-        return self.has_rules or self.fence is not None
+        return self.has_rules
 
     def counts(self) -> dict[str, int]:
         return {k: len(getattr(self, k)) for k in RULE_TYPES}
@@ -126,13 +121,6 @@ def load_rules() -> Rules:
         if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
             raise PrivacyConfigError(f"[exclude] {kind} must be a list of strings")
         rules.add(kind, raw)
-    fence = realms_mod.fence()
-    if fence is not None:
-        try:
-            rules.realms = realms_mod.load_realms()
-        except realms_mod.RealmConfigError as exc:
-            raise PrivacyConfigError(str(exc)) from exc
-        rules.fence = fence
     return rules
 
 
@@ -188,8 +176,6 @@ def _filename_matches(name: str | None, rules: Rules) -> bool:
 
 
 def account_visible(name: str | None, rules: Rules) -> bool:
-    if rules.fence is not None and realms_mod.realm_of(name, rules.realms) != rules.fence:
-        return False
     return not (name and _fold(name) in rules.accounts)
 
 
@@ -248,8 +234,6 @@ def orphan_hidden(conn: sqlite3.Connection, row, rules: Rules | None = None) -> 
         sql, params = _hidden_message_sql(conn, rules, "m")
         return sql != "0" and conn.execute(
             f"SELECT 1 FROM messages m WHERE m.id = ? AND ({sql})", [row["message_pk"], *params]).fetchone() is not None
-    if rules.fence is not None and rules.fence != rules.realms.get("files", "work"):
-        return True
     return excludes_orphan(row["filename"], row["text"], rules)
 
 
@@ -273,19 +257,6 @@ def _account_ids(conn: sqlite3.Connection, rules: Rules) -> list[int]:
     if not rules.accounts:
         return []
     return [r[0] for r in conn.execute("SELECT id, name FROM accounts") if _fold(r[1]) in rules.accounts]
-
-
-def _fence_account_ids(conn: sqlite3.Connection, rules: Rules) -> list[int]:
-    """Accounts outside the fence (including accounts without a realm)."""
-    if rules.fence is None:
-        return []
-    return [r[0] for r in conn.execute("SELECT id, name FROM accounts")
-            if realms_mod.realm_of(r[1], rules.realms) != rules.fence]
-
-
-def _fence_sql(col: str, ids: list[int]) -> str:
-    """True when `col` (an account id) is outside the fence. NULL counts as outside."""
-    return f"({col} IS NULL OR {col} IN ({_int_list(ids)}))" if ids else f"{col} IS NULL"
 
 
 def hidden_account_ids(conn: sqlite3.Connection, rules: Rules | None = None) -> list[int]:
@@ -312,11 +283,6 @@ def _hidden_message_sql(conn: sqlite3.Connection, rules: Rules, m: str) -> tuple
         parts.append(f"{m}.folder_id IN ({_int_list(folders)})")
     if accounts:
         parts.append(f"{m}.account_id IN ({_int_list(accounts)})")
-    if rules.fence is not None:
-        # Hidden unless some account holding the message is inside the fence (merged mail counts for each).
-        inside = [r[0] for r in conn.execute("SELECT id, name FROM accounts")
-                  if realms_mod.realm_of(r[1], rules.realms) == rules.fence]
-        parts.append(f"NOT {realms_mod.message_in_accounts_sql(m, inside)}")
     p, q = _sender_sql(f"{m}.from_addr", rules)
     parts, params = parts + p, params + q
     for k in rules.subject_keywords:
@@ -338,9 +304,6 @@ def _event_direct_sql(conn: sqlite3.Connection, rules: Rules, e: str) -> tuple[s
     accounts = _account_ids(conn, rules)
     if accounts:
         parts.append(f"{e}.calendar_id IN (SELECT c.id FROM calendars c WHERE c.account_id IN ({_int_list(accounts)}))")
-    if rules.fence is not None:
-        outside = _fence_sql("c.account_id", _fence_account_ids(conn, rules))
-        parts.append(f"({e}.calendar_id IS NULL OR {e}.calendar_id IN (SELECT c.id FROM calendars c WHERE {outside}))")
     p, q = _sender_sql(f"{e}.organizer_addr", rules)
     parts, params = parts + p, params + q
     for k in rules.subject_keywords:
@@ -390,9 +353,6 @@ def hidden_folder_ids(conn: sqlite3.Connection, rules: Rules | None = None) -> s
     accounts = _account_ids(conn, rules)
     if accounts:
         ids |= {r[0] for r in conn.execute(f"SELECT id FROM folders WHERE account_id IN ({_int_list(accounts)})")}
-    if rules.fence is not None:
-        outside = _fence_sql("account_id", _fence_account_ids(conn, rules))
-        ids |= {r[0] for r in conn.execute(f"SELECT id FROM folders WHERE {outside}")}
     return ids
 
 
@@ -411,12 +371,11 @@ def count_hidden(conn: sqlite3.Connection, rules: Rules | None = None) -> dict[s
 
 
 def status(conn: sqlite3.Connection, rules: Rules | None = None) -> dict:
-    """Counts only: safe to show in tool output. Hidden counts cover the exclusion rules, not the realm fence."""
+    """Counts only: safe to show in tool output. Hidden counts cover the exclusion rules."""
     rules = load_rules() if rules is None else rules
-    hidden = count_hidden(conn, replace(rules, fence=None))
+    hidden = count_hidden(conn, rules)
     return {"active": rules.has_rules, "rules": rules.counts(),
-            "hidden_messages": hidden["messages"], "hidden_events": hidden["events"],
-            "realm": rules.fence or "all"}
+            "hidden_messages": hidden["messages"], "hidden_events": hidden["events"]}
 
 
 # --------------------------------------------------------------------------- purge
@@ -455,7 +414,6 @@ def _delete_vectors(archive, message_ids: list[int]) -> None:
 def purge(archive, rules: Rules | None = None, *, dry_run: bool = False) -> dict[str, int]:
     """Delete archived messages and events that match the rules. Returns counts only."""
     rules = load_rules() if rules is None else rules
-    rules = replace(rules, fence=None)  # purging never follows the realm fence: it deletes only what rules exclude
     conn = archive.conn
     out = dict.fromkeys(("messages", "attachments", "cached_files", "orphan_files", "events", "folders", "accounts"), 0)
     if not rules.active:

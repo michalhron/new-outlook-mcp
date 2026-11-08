@@ -78,8 +78,7 @@ CREATE TABLE IF NOT EXISTS message_sources (
     message_pk INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    -- Account this source holds the message in. A message merged from two
-    -- accounts (e.g. work Outlook and HEY) belongs to the realms of both.
+    -- Account this source holds the message in.
     account_id INTEGER REFERENCES accounts(id),
     PRIMARY KEY (source, source_key)
 );

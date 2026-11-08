@@ -104,9 +104,9 @@ def test_sync_now_reports_missing_ics_as_not_configured(server):
     assert res["status"] == "not_configured" and "source not found" not in res["message"]
 
 
-def test_sync_now_all_includes_eml_folders(server):
+def test_sync_now_all_covers_every_source(server):
     async def go():
         async with Client(server) as c:
             return _payload(await c.call_tool("sync_now", {"source": "all"}))
 
-    assert {"legacy", "hxstore", "ics", "eml"} == {r["source"] for r in anyio.run(go)["results"]}
+    assert {"legacy", "hxstore", "ics"} == {r["source"] for r in anyio.run(go)["results"]}

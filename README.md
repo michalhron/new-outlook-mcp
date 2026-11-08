@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/assets/banner.svg" alt="new-outlook-mcp: Claude reads your Outlook mail and calendar from the files already on your Mac" width="100%"></p>
 
-A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API. Private mail you read through [mcp-hey](https://github.com/michalhron/mcp-hey) can join the same archive, kept apart as its own realm.
+A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API.
 
 ## Why it exists
 
@@ -75,7 +75,6 @@ Using it:
 - [Calendar](docs/calendar.md): sources, the published ICS feed, timezones, free time.
 - [Safety and privacy](docs/privacy.md): what the project does with your mail, privacy scopes, purging.
 - [Data sources](docs/data-sources.md): what each Outlook source holds, how they merge, orphan files, changing institutions.
-- [Work and private mail](docs/work-and-private.md): HEY mail you read through mcp-hey, realms, and the work-only default.
 - [Checking the import](docs/validation.md): validate, experiments, coverage, status.
 - [Limitations and maintenance](docs/maintenance.md): known gaps, and what to do when an Outlook update breaks the import.
 
@@ -84,7 +83,6 @@ Changing the code:
 - [Architecture](docs/ARCHITECTURE.md): data flow, modules, schema, adding a source.
 - [HxStore notes](docs/hxstore-notes.md) and [legacy notes](docs/legacy-notes.md): the two Outlook formats.
 - [Roadmap](docs/ROADMAP.md) and [ideas](docs/IDEAS.md).
-- [Next steps and the personal-index overhaul](docs/next-steps-and-personal-index.md): measured search quality, small next steps, and the plan to grow the archive into a general index for mail, notes and files.
 
 ## Development
 

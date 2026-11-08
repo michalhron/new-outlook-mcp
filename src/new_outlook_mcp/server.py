@@ -37,7 +37,7 @@ realm="private" or realm="all" only when the user asks about private mail.
 A result with a `warning` field may be missing newer mail: tell the user, do not
 treat an empty result as proof that a message does not exist.
 Nothing here can send mail, answer invitations, or change calendar events.
-create_draft and create_event_draft only open a draft that the user reviews
+create_draft, create_reply_draft and create_event_draft only open a draft that the user reviews
 and sends or saves themselves.
 """
 
@@ -315,10 +315,11 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=True, open_world_hint=False))
-    def sync_now(source: Literal["legacy", "hxstore", "ics", "all"] = "all") -> dict:
-        """Import new mail and calendar data from local Outlook files into the archive. Reads copies of
-        Outlook's files only. The one network access is the user's own published ICS feeds, if configured."""
-        names = ["legacy", "hxstore", "ics"] if source == "all" else [source]
+    def sync_now(source: Literal["legacy", "hxstore", "ics", "eml", "all"] = "all") -> dict:
+        """Import new mail and calendar data into the archive: local Outlook files (copies only) and any
+        .eml folders set up with `new-outlook eml add`. The one network access is the user's own published
+        ICS feeds, if configured."""
+        names = ["legacy", "hxstore", "ics", "eml"] if source == "all" else [source]
         results = sync(archive(), names)
         return {"results": [r.as_dict() for r in results]}
 
@@ -339,6 +340,21 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
             return tools.create_draft(to, cc=cc, bcc=bcc, subject=subject, body=body, attachments=attachments)
         except tools.ToolInputError as exc:
             raise ToolError(str(exc)) from exc
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                             idempotent_hint=False, open_world_hint=True))
+    def create_reply_draft(
+        email_id: Annotated[str, Field(description="Archive id or Internet Message-ID of the email to answer")],
+        body: Annotated[str, Field(description="Plain-text reply, placed above the quoted original")] = "",
+        reply_all: Annotated[bool, Field(description="Also address the other To and Cc recipients")] = False,
+        attachments: Annotated[list[str] | None, Field(description="Absolute paths of local files to attach")] = None,
+        include_quote: Annotated[bool, Field(description="Quote the original below the reply")] = True,
+    ) -> dict:
+        """Open a draft answering an archived email, with recipients, Re: subject and the original quoted. It
+        never sends: the user reviews and sends it. It is a new message, not linked to the thread (`in_thread`
+        is false), because Outlook offers no way to reply to a recent message by script: tell the user."""
+        return call(tools.create_reply_draft, email_id, body, reply_all=reply_all, attachments=attachments,
+                    include_quote=include_quote)
 
     return server
 

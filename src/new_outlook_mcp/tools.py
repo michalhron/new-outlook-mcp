@@ -75,6 +75,15 @@ def _addr(name: str | None, addr: str | None) -> str:
     return addr or name or ""
 
 
+PREVIEW_NOTE = ("Only a short preview of this message is on this Mac. For the full text, open the message "
+                "in Outlook so it downloads, then run sync_now.")
+
+
+def _preview_only(row: sqlite3.Row) -> bool:
+    """New Outlook stores full bodies as HTML, so a message first seen in its cache without HTML is a preview."""
+    return row["first_source"] == "hxstore" and not row["body_html"]
+
+
 def _summary(row: sqlite3.Row, snippet: str | None = None, conn: sqlite3.Connection | None = None) -> dict:
     to = json.loads(row["to_json"] or "[]")
     out = {
@@ -97,6 +106,8 @@ def _summary(row: sqlite3.Row, snippet: str | None = None, conn: sqlite3.Connect
     else:
         body = row["body_text"] or ""
         out["snippet"] = re.sub(r"\s+", " ", body[:240]).strip()
+    if _preview_only(row):
+        out["preview_only"] = True
     return out
 
 
@@ -433,6 +444,9 @@ def get_email(
         out["next_offset"] = offset + len(chunk)
     if include_headers:
         out["headers"] = row["headers"]
+    if _preview_only(row):
+        out["preview_only"] = True
+        out["preview_note"] = PREVIEW_NOTE
     return _with_warning(out, archive)
 
 
@@ -502,6 +516,7 @@ def get_thread(
             "folder": r["folder"],
             "body": body[: max(0, int(body_chars))],
             "body_truncated": len(body) > body_chars,
+            **({"preview_only": True} if _preview_only(r) else {}),
         })
     return _with_warning({"thread_size": total, "returned": len(messages), "matched_by": method, "messages": messages},
                          archive)

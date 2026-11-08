@@ -222,3 +222,26 @@ def test_create_draft_without_attachments_stays_on_mailto():
     opened = []
     res = tools.create_draft(["a@example.org"], subject="S", opener=opened.append)
     assert res["route"] == "mailto" and "attachments" not in res and len(opened) == 1
+
+
+def _make_preview(archive, pk):
+    archive.conn.execute("UPDATE messages SET first_source = 'hxstore', body_html = NULL WHERE id = ?", (pk,))
+    archive.conn.commit()
+
+
+def test_preview_only_message_is_marked_everywhere(loaded):
+    pk = tools.list_recent(loaded)["results"][0]["id"]
+    _make_preview(loaded, pk)
+    assert next(r for r in tools.list_recent(loaded)["results"] if r["id"] == pk)["preview_only"] is True
+    email = tools.get_email(loaded, str(pk))
+    assert email["preview_only"] is True and "open the message in Outlook" in email["preview_note"]
+    thread = tools.get_thread(loaded, str(pk))
+    assert next(m for m in thread["messages"] if m["id"] == pk)["preview_only"] is True
+
+
+def test_full_messages_are_not_marked_as_previews(loaded):
+    pk = tools.list_recent(loaded)["results"][0]["id"]
+    assert "preview_only" not in tools.get_email(loaded, str(pk))
+    loaded.conn.execute("UPDATE messages SET first_source = 'hxstore', body_html = '<p>x</p>' WHERE id = ?", (pk,))
+    loaded.conn.commit()
+    assert "preview_only" not in tools.get_email(loaded, str(pk))

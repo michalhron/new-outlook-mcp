@@ -1009,14 +1009,16 @@ def create_draft(
     subject: str | None = None,
     body: str | None = None,
     attachments: list[str] | None = None,
+    always_script: bool = False,
     opener: Callable[[str], str | None] | None = None,
     scripter: Callable[[list[str]], int] | None = None,
     revealer: Callable[[str], None] | None = None,
 ) -> dict:
     """Open a draft in Outlook for the user to review. Never sends anything.
 
-    With attachments the draft is built through Outlook's AppleScript interface. If that fails it opens a
-    mailto: draft and reveals the files in Finder, and the result says they are not attached.
+    With attachments (or `always_script`, which avoids the mailto: length limit) the draft is built through
+    Outlook's AppleScript interface. If that fails it opens a mailto: draft and reveals any files in Finder,
+    and the result says they are not attached.
     """
     files = _check_attachments(attachments)
     url = build_mailto(to, cc=cc, bcc=bcc, subject=subject, body=body)
@@ -1029,7 +1031,7 @@ def create_draft(
             )
         return (opener or _open_in_outlook)(url) or "Outlook"
 
-    if not files:
+    if not files and not always_script:
         app = open_mailto()
         return {
             "opened": True,
@@ -1039,7 +1041,9 @@ def create_draft(
             "mailto_length": len(url),
         }
 
-    out: dict = {"opened": True, "attachments": files}
+    out: dict = {"opened": True}
+    if files:
+        out["attachments"] = files
     total = sum(f["size_bytes"] for f in files)
     if total > ATTACHMENT_WARN_BYTES:
         out["size_warning"] = f"Attachments total {total // (1024 * 1024)} MB; the mail server may refuse a message this large."
@@ -1052,11 +1056,19 @@ def create_draft(
         app = open_mailto()
         for f in files:
             reveal(f["path"])
-        return {**out, "app": app, "route": "mailto", "attachments_in_draft": False, "fallback_reason": str(exc),
+        out.update(app=app, route="mailto", fallback_reason=str(exc))
+        if not files:
+            out["note"] = f"A draft window was opened in {app}. Nothing was sent; review and send it manually."
+            return out
+        return {**out, "attachments_in_draft": False,
                 "note": f"A draft window was opened in {app}, WITHOUT the attachments: they could not be added "
                         "automatically. The files are shown in Finder; drag them into the draft. "
                         "Nothing was sent; review and send it manually."}
-    out.update(app="Outlook", route="applescript", attachments_in_draft=in_draft == len(files), files_in_draft=in_draft)
+    out.update(app="Outlook", route="applescript")
+    if not files:
+        out["note"] = "A draft window was opened in Outlook. Nothing was sent; review and send it manually."
+        return out
+    out.update(attachments_in_draft=in_draft == len(files), files_in_draft=in_draft)
     if in_draft == len(files):
         out["note"] = (f"A draft window was opened in Outlook with {in_draft} attachment(s). "
                        "Nothing was sent; review and send it manually.")
@@ -1066,6 +1078,81 @@ def create_draft(
         out["note"] = (f"A draft window was opened in Outlook, but it holds {in_draft} of {len(files)} attachments. "
                        "The files are shown in Finder; drag in any that are missing. "
                        "Nothing was sent; review and send it manually.")
+    return out
+
+
+MAX_QUOTED_CHARS = 4000
+_ADDRESS = re.compile(r"[\w.+'-]+@[\w.-]+")
+_REPLY_PREFIX = re.compile(r"^\s*(re|aw|antw|odp|sv)\s*:", re.I)
+
+
+def _addresses_in(entries: list[str]) -> list[str]:
+    found = (_ADDRESS.search(e) for e in entries)
+    return [m.group(0) for m in found if m]
+
+
+def _reply_recipients(row: sqlite3.Row, own: set[str], *, reply_all: bool) -> tuple[list[str], list[str]]:
+    """(to, cc) for a reply. Replying to your own message goes to the people you wrote to."""
+    to_entries = _addresses_in(json.loads(row["to_json"] or "[]"))
+    cc_entries = _addresses_in(json.loads(row["cc_json"] or "[]"))
+    sender = row["from_addr"]
+    seen = set(own)
+
+    def fresh(addrs: list[str]) -> list[str]:
+        out = []
+        for a in addrs:
+            if a.lower() not in seen:
+                seen.add(a.lower())
+                out.append(a)
+        return out
+
+    if sender and sender.lower() not in own:
+        to = fresh([sender])
+        if reply_all:
+            to += fresh(to_entries)
+    else:
+        to = fresh(to_entries)
+        if not reply_all:
+            to = to[:1]
+    return to or ([sender] if sender else []), fresh(cc_entries) if reply_all else []
+
+
+def create_reply_draft(
+    archive: Archive,
+    email_id: str,
+    body: str = "",
+    *,
+    reply_all: bool = False,
+    attachments: list[str] | None = None,
+    include_quote: bool = True,
+    **draft_options,
+) -> dict:
+    """Open a draft that answers an archived email: recipients, Re: subject and the original quoted.
+    Never sends. It is a new message, because Outlook offers no way to reply to a recent message by script."""
+    row = _resolve_id(archive, email_id)
+    own = {r[0].lower() for r in archive.conn.execute("SELECT name FROM accounts WHERE name LIKE '%@%'")}
+    to, cc = _reply_recipients(row, own, reply_all=reply_all)
+    if not to:
+        raise ToolInputError("this email has no sender or recipient address to reply to")
+    subject = row["subject"] or ""
+    if not _REPLY_PREFIX.match(subject):
+        subject = f"Re: {subject}"
+    text = body or ""
+    original = row["body_text"] or ""
+    if include_quote and original:
+        cut = len(original) > MAX_QUOTED_CHARS
+        quoted = "\n".join(f"> {line}" for line in original[:MAX_QUOTED_CHARS].splitlines())
+        who = _addr(row["from_name"], row["from_addr"])
+        text = f"{text}\n\nOn {_utc_label(row['date_utc'])}, {who} wrote:\n{quoted}" + ("\n> [...]" if cut else "")
+    out = create_draft(to, cc=cc or None, subject=subject, body=text, attachments=attachments, always_script=True,
+                       **draft_options)
+    out.update(to=to, cc=cc, subject=subject, in_thread=False)
+    notes = [out["note"], "This is a new message quoting the original, not a reply linked to its thread."]
+    if include_quote and _preview_only(row):
+        notes.append("Only a preview of the original was available to quote.")
+    if row["first_source"] == "eml":
+        notes.append("The original came from the HEY archive, but this draft will send from your Outlook account.")
+    out["note"] = " ".join(notes)
     return out
 
 

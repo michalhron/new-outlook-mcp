@@ -95,6 +95,10 @@ Nothing is ever sent or saved without you.
 
 Opens a prefilled draft in Outlook, even when another app (HEY, Apple Mail) is your default mail app. Without attachments it uses a `mailto:` link. `attachments` takes absolute paths of local files: the draft is then built through Outlook's AppleScript interface, and the result reports `route` and `attachments_in_draft`. If that fails, a `mailto:` draft opens without the files and they are shown in Finder to drag in. Only if Outlook is not installed does it fall back to the default app; `app` in the result says which one opened it. You review and send it.
 
+`create_reply_draft(email_id, body?, reply_all?, attachments?, include_quote?)`
+
+Opens a draft answering an archived email, with the recipients, a `Re:` subject and the original quoted below your text. Your own addresses are left out, and answering your own message goes to the people you wrote to. It is a new message rather than a reply linked to the thread, because Outlook offers no way to reply to a recent message by script, so `in_thread` is always false.
+
 `create_event_draft(subject, start, end?, all_day?, location?, body?, attendees?, timezone?)`
 
 Experimental. Writes an `.ics` file and opens it in Outlook, so Outlook offers to add the event. `end` defaults to one hour after `start`.

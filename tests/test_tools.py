@@ -245,3 +245,61 @@ def test_full_messages_are_not_marked_as_previews(loaded):
     loaded.conn.execute("UPDATE messages SET first_source = 'hxstore', body_html = '<p>x</p>' WHERE id = ?", (pk,))
     loaded.conn.commit()
     assert "preview_only" not in tools.get_email(loaded, str(pk))
+
+
+def _reply_fixture(archive, **fields):
+    archive.conn.execute("INSERT OR IGNORE INTO accounts(name) VALUES ('me@uni.example.edu')")
+    pk = tools.list_recent(archive)["results"][0]["id"]
+    values = {"from_name": "Ann", "from_addr": "ann@example.org", "subject": "Plans", "body_text": "line one\nline two",
+              "to_json": '["Me <ME@uni.example.edu>", "Bob <bob@example.org>"]', "cc_json": '["Cy <cy@example.org>"]', **fields}
+    cols = ", ".join(f"{k} = ?" for k in values)
+    archive.conn.execute(f"UPDATE messages SET {cols} WHERE id = ?", [*values.values(), pk])
+    archive.conn.commit()
+    return str(pk)
+
+
+def _reply(archive, pk, **kwargs):
+    calls = []
+
+    def scripter(args):
+        calls.append(args)
+        return 0
+
+    return tools.create_reply_draft(archive, pk, "My answer", scripter=scripter, **kwargs), calls[0]
+
+
+def test_reply_goes_to_the_sender_with_quote_and_re(loaded):
+    res, args = _reply(loaded, _reply_fixture(loaded))
+    assert args[0] == "Re: Plans" and args[2:6] == ["1", "0", "0", "ann@example.org"]
+    assert args[1].startswith("My answer\n\nOn ") and "> line one\n> line two" in args[1]
+    assert res["route"] == "applescript" and res["in_thread"] is False and "not a reply linked" in res["note"]
+
+
+def test_reply_all_leaves_out_my_own_address(loaded):
+    res, _ = _reply(loaded, _reply_fixture(loaded), reply_all=True)
+    assert res["to"] == ["ann@example.org", "bob@example.org"] and res["cc"] == ["cy@example.org"]
+
+
+def test_replying_to_my_own_message_goes_to_its_recipients(loaded):
+    res, _ = _reply(loaded, _reply_fixture(loaded, from_addr="me@uni.example.edu"))
+    assert res["to"] == ["bob@example.org"]
+
+
+def test_reply_keeps_an_existing_prefix_and_can_skip_the_quote(loaded):
+    _, args = _reply(loaded, _reply_fixture(loaded, subject="RE: Plans"), include_quote=False)
+    assert args[0] == "RE: Plans" and args[1] == "My answer"
+
+
+def test_reply_says_when_only_a_preview_was_quoted(loaded):
+    pk = _reply_fixture(loaded)
+    loaded.conn.execute("UPDATE messages SET first_source = 'hxstore', body_html = NULL WHERE id = ?", (int(pk),))
+    assert "Only a preview" in _reply(loaded, pk)[0]["note"]
+
+
+def test_reply_fallback_without_files_does_not_mention_attachments(loaded):
+    def failing(_):
+        raise tools.DraftScriptError("no")
+
+    opened = []
+    res = tools.create_reply_draft(loaded, _reply_fixture(loaded), "x", scripter=failing, opener=opened.append)
+    assert res["route"] == "mailto" and opened and "WITHOUT" not in res["note"]

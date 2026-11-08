@@ -63,7 +63,7 @@ _LINE = re.compile(r"\[(?P<source>\w+)\] (?P<status>\w+):[^|\n]*(?:\| (?P<msg>.*
 
 def parse_sync_output(text: str, returncode: int = 0) -> RunOutcome:
     """Turn the CLI's sync output into one outcome. The worst status wins."""
-    rank = {"ok": 0, "warning": 1, "unavailable": 2, "error": 3}
+    rank = {"ok": 0, "not_configured": 0, "warning": 1, "unavailable": 2, "error": 3}
     status, msgs = "ok", []
     for line in text.splitlines():
         m = _LINE.search(line.strip())

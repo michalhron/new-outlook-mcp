@@ -144,7 +144,7 @@ def test_same_message_id_merges_with_outlook_mail(loaded, tmp_path):
 
 
 def test_unavailable_without_folders(archive, tmp_path):
-    assert sync(archive, ["eml"], snapshot_base=tmp_path / "snaps")[0].status == "unavailable"
+    assert sync(archive, ["eml"], snapshot_base=tmp_path / "snaps")[0].status == "not_configured"
 
 
 def test_watcher_watches_eml_folders(hey_folder, tmp_path):

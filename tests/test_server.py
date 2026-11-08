@@ -93,3 +93,12 @@ def test_sync_now_reports_unavailable_sources(server):
 
     res = anyio.run(go)
     assert res["results"][0]["status"] == "unavailable"
+
+
+def test_sync_now_reports_missing_ics_as_not_configured(server):
+    async def go():
+        async with Client(server) as c:
+            return _payload(await c.call_tool("sync_now", {"source": "ics"}))
+
+    res = anyio.run(go)["results"][0]
+    assert res["status"] == "not_configured" and "source not found" not in res["message"]

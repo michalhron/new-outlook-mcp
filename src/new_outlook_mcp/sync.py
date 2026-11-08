@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class SyncResult:
     source: str
-    status: str  # ok | warning | error | unavailable
+    status: str  # ok | warning | error | unavailable | not_configured
     seen: int = 0
     inserted: int = 0
     merged: int = 0
@@ -57,6 +57,8 @@ def run_import(
 ) -> SyncResult:
     name = importer.name
     if not importer.available():
+        if importer.optional:
+            return SyncResult(source=name, status="not_configured", message="not configured (optional)")
         return SyncResult(source=name, status="unavailable", message=f"source not found: {importer.source_path}")
 
     snap_dir = new_snapshot_dir(name, snapshot_base or paths.snapshots_dir())

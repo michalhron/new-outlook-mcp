@@ -315,10 +315,11 @@ def build_server(db_path: Path | None = None, *, realm: str | None = None) -> MC
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=True, open_world_hint=False))
-    def sync_now(source: Literal["legacy", "hxstore", "ics", "all"] = "all") -> dict:
-        """Import new mail and calendar data from local Outlook files into the archive. Reads copies of
-        Outlook's files only. The one network access is the user's own published ICS feeds, if configured."""
-        names = ["legacy", "hxstore", "ics"] if source == "all" else [source]
+    def sync_now(source: Literal["legacy", "hxstore", "ics", "eml", "all"] = "all") -> dict:
+        """Import new mail and calendar data into the archive: local Outlook files (copies only) and any
+        .eml folders set up with `new-outlook eml add`. The one network access is the user's own published
+        ICS feeds, if configured."""
+        names = ["legacy", "hxstore", "ics", "eml"] if source == "all" else [source]
         results = sync(archive(), names)
         return {"results": [r.as_dict() for r in results]}
 

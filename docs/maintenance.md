@@ -20,18 +20,16 @@ New Outlook's cache format is undocumented and can change with any update. The i
 
 Your archive is unaffected and stays searchable. The legacy archive and ICS feeds keep working.
 
-What to do:
+What happens next, and what to do:
 
-1. Run an experiment pair. It also runs on an unknown layout:
+1. **The layout probe runs by itself.** Right after a sync stops on a changed layout, `new-outlook sync` copies the cache and runs `new-outlook layout-probe` (once per change, not on every retry). For each field of every changed class it tries each place the field could have moved to, and checks which one matches what the archive imported before the update. Flag bits are searched bit by bit. You get a notification, and a report in `~/Library/Application Support/new-outlook-mcp/layout-probe/<time>/`:
+   - `report.txt`: each field marked `found` (one place clearly matches), `derived` (follows from its neighbours and agrees with the archive), `ambiguous` or `no evidence`. Offsets and counts only, no mail.
+   - `proposal.py`: the new sizes and offsets for `importers/hxformat.py`, written only when every field was found or derived.
 
-   ```sh
-   new-outlook experiment start drift1 --kind pair
-   # follow the printed steps in Outlook
-   new-outlook experiment finish drift1
-   ```
-
-2. Paste the report into a Claude session to update the offsets in `importers/hxformat.py` and the notes in [hxstore-notes.md](hxstore-notes.md).
-3. Run `new-outlook sync --source hxstore`.
+   Nothing is applied automatically, and the import stays stopped until the decoder is updated. Run the probe by hand with `new-outlook layout-probe`, or test it on a layout already solved with `--reference 16.114.3 --hxstore <older copy>`. `new-outlook sync --no-probe` skips it.
+2. **Apply the proposal after checking it.** Add the sizes to `BUILDS` and the offsets to `FIELDS`, compare a few recent messages with what Outlook shows (including one with an attachment and one in Sent Items), run the tests, and add a dated entry to [hxstore-notes.md](hxstore-notes.md). Paste the report into a Claude session to have this done.
+3. **If the report has ambiguous fields**, look at those by hand. `new-outlook experiment start drift1 --kind pair` takes a copy for a before/after comparison (it also runs on an unknown layout); follow the printed steps and run `new-outlook experiment finish drift1`.
+4. Run `new-outlook sync --source hxstore`, then `new-outlook doctor`.
 
 A torn copy, where Outlook wrote to the file during the copy, is retried once. If too many blocks still fail their checksums, the sync is skipped and the watcher backs off for 5 minutes. This is normal while Outlook is busy and needs no action.
 
@@ -42,7 +40,7 @@ Other warnings in `new-outlook status`:
 | A source returned zero records after earlier runs found some | Outlook moved or emptied the file, or the format changed. Check the paths in [getting-started.md](getting-started.md#configuration). |
 | Sync lag is growing | The watcher is not running. `new-outlook launchd install --watch` restarts it. Check the logs in `~/Library/Logs/new-outlook-mcp/`. |
 | Permission errors | The program that opens Outlook's files lacks Full Disk Access. Giving it to Claude is not enough. Run `new-outlook doctor`, and see [getting-started.md](getting-started.md#give-it-access-to-outlooks-files). |
-| HxStore layout changed | Outlook was updated and changed its cache records. Sync refuses to import rather than misread them; `new-outlook doctor` lists the changed classes. The decoder in `importers/hxformat.py` needs the new sizes and offsets. |
+| HxStore layout changed | Outlook was updated and changed its cache records. Sync refuses to import rather than misread them; `new-outlook doctor` lists the changed classes, and the layout probe report proposes the new offsets (see above). |
 
 ## Backups
 

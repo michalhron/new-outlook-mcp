@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -85,7 +86,69 @@ def cmd_sync(args) -> int:
             rc = 1
             if args.notify:
                 notify("New Outlook MCP sync", f"{r.source}: {r.status}. {r.message}"[:240])
+    if not args.no_probe:
+        _probe_after_layout_error(Path(args.db), results, notify_user=args.notify)
     return rc
+
+
+def cmd_layout_probe(args) -> int:
+    from . import layoutprobe
+
+    rep = _run_layout_probe(Path(args.db), Path(args.hxstore) if args.hxstore else None, reference=args.reference)
+    if rep is None:
+        return 1
+    print(layoutprobe.render(rep))
+    if rep.classes:
+        print(f"\nsaved in {layoutprobe.save(rep)}")
+    return 0 if rep.complete or not rep.classes else 2
+
+
+def _run_layout_probe(db: Path, hxstore: Path | None = None, *, reference: str | None = None):
+    """Probe a copy of HxStore.hxd (never the live file). Returns None when there is nothing to read."""
+    import shutil
+    import tempfile
+
+    from . import layoutprobe
+
+    source = hxstore or paths.hxstore_path()
+    if not source.is_file():
+        print(f"no HxStore at {source}", file=sys.stderr)
+        return None
+    with tempfile.TemporaryDirectory(prefix="layout-probe-") as tmp:
+        copy = Path(tmp) / source.name
+        shutil.copyfile(source, copy)
+        return layoutprobe.probe(copy, db, outlook_version=doctor.outlook_version(), reference=reference)
+
+
+_LAYOUT_SIZES = re.compile(r"class (0x[0-9a-f]+): size (0x[0-9a-f]+)")
+
+
+def _probe_after_layout_error(db: Path, results, *, notify_user: bool) -> None:
+    """After a sync stopped on an unknown layout: run the probe once per set of new sizes, save the report,
+    and say where it is. It proposes offsets only; nothing is applied."""
+    from . import layoutprobe
+
+    failed = next((r for r in results if r.source == "hxstore" and "HxStoreLayoutError" in (r.message or "")), None)
+    if failed is None:
+        return
+    signature = layoutprobe.signature((int(c, 16), int(s, 16)) for c, s in _LAYOUT_SIZES.findall(failed.message))
+    done = layoutprobe.already_probed(signature)
+    if done is not None:
+        print(f"layout probe for this change already ran: {done / 'report.txt'}")
+        return
+    try:
+        rep = _run_layout_probe(db)
+    except Exception as exc:  # the probe must never turn a reported failure into a crash
+        print(f"layout probe failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return
+    if rep is None or not rep.classes:
+        return
+    where = layoutprobe.save(rep)
+    summary = ("every field found; a proposal is ready to review" if rep.complete
+               else "some fields need a look by hand")
+    print(f"layout probe: {summary}. Report: {where / 'report.txt'}")
+    if notify_user:
+        notify("New Outlook MCP: Outlook layout changed", f"Layout probe: {summary}. See {where / 'report.txt'}")
 
 
 def cmd_snapshot(args) -> int:
@@ -522,6 +585,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--include-small-images", action="store_true",
                    help="also index small orphan png/gif images (under 10 KB, usually signature logos)")
     src_opts(s)
+    s.add_argument("--no-probe", action="store_true",
+                   help="do not run the layout probe when the cache layout has changed")
     s.set_defaults(func=cmd_sync)
 
     s = sub.add_parser("snapshot", help="copy source files to a timestamped directory")
@@ -558,6 +623,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--via-uv", action="store_true",
                    help="run the agent through uv, so it uses uv's Full Disk Access instead of Python's")
     s.set_defaults(func=cmd_launchd)
+
+    s = sub.add_parser("layout-probe", help="after an Outlook update changed the cache layout: find where each "
+                       "field moved and propose offsets (never applies them)")
+    s.add_argument("--hxstore", help="HxStore.hxd to probe (default: a copy of the live one)")
+    s.add_argument("--reference", help="known build to compare with (default: the newest); "
+                                       "an older one tests the probe on a layout already solved")
+    s.set_defaults(func=cmd_layout_probe)
 
     s = sub.add_parser("doctor", help="check file access, cache layout, archive age and agents, with a fix for each problem")
     s.add_argument("--json", action="store_true")

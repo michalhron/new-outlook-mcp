@@ -57,16 +57,28 @@ FS_16_113 = {
     C_EVENT_DETAIL: 0x348, C_MESSAGE: 0x60F, C_BODY: 0x740, C_FILE: 0xC5, C_ATTACHMENT: 0x318,
 }
 FS_16_114 = FS_16_113 | {C_ACCOUNT: 0x19D0, C_FOLDER: 0x4D8, C_BODY: 0x74E}
-EXPECTED_FS = {c: tuple(sorted({FS_16_113[c], FS_16_114[c]})) for c in FS_16_113}
+FS_16_115 = FS_16_114 | {C_ACCOUNT: 0x1A12, C_EVENT: 0x459, C_BODY: 0x752, C_ATTACHMENT: 0x31E}
+EXPECTED_FS = {c: tuple(sorted({FS_16_113[c], FS_16_114[c], FS_16_115[c]})) for c in FS_16_113}
 
 # Field offsets that differ between those sizes, keyed by (class, fs). The other offsets did not move.
 FIELDS = {
     (C_ACCOUNT, 0x1992): {"smtp": 0x156C},
     (C_ACCOUNT, 0x19D0): {"smtp": 0x159C},
+    (C_ACCOUNT, 0x1A12): {"smtp": 0x15D4},
     (C_FOLDER, 0x4C2): {"name": 0x434, "type": 0x47C},
     (C_FOLDER, 0x4D8): {"name": 0x448, "type": 0x490},
     (C_BODY, 0x740): {"html": 0x678, "file": 0x2B2},
     (C_BODY, 0x74E): {"html": 0x684, "file": 0x2BA},
+    (C_BODY, 0x752): {"html": 0x684, "file": 0x2BA},
+    # Event fields from +0x30c on moved 4 bytes in 16.115, and the all-day and cancelled flags moved up one bit.
+    (C_EVENT, 0x455): {"uid": 0x334, "subject": 0x400, "tz": 0x30C, "location": 0x344, "org_name": 0x374,
+                       "org_addr": 0x37C, "attendees": 0x36C, "show_as": 0x330, "event_type": 0x388,
+                       "response": 0x3E0, "flags": 0x43A, "all_day_bit": 0x08, "cancelled_bit": 0x10,
+                       "strings": (0x2BC, 0x304, 0x344, 0x374, 0x37C, 0x3D4, 0x400)},
+    (C_EVENT, 0x459): {"uid": 0x338, "subject": 0x404, "tz": 0x310, "location": 0x348, "org_name": 0x378,
+                       "org_addr": 0x380, "attendees": 0x370, "show_as": 0x334, "event_type": 0x38C,
+                       "response": 0x3E4, "flags": 0x43E, "all_day_bit": 0x10, "cancelled_bit": 0x20,
+                       "strings": (0x2BC, 0x308, 0x30C, 0x348, 0x378, 0x380, 0x3D8, 0x404)},
 }
 
 RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0x19D: "reply_to"}
@@ -527,16 +539,13 @@ class HxEvent:
     account: str | None
 
 
-_EVENT_STRINGS = (0x2BC, 0x304, 0x344, 0x374, 0x37C, 0x3D4, 0x400)
-
-
 def _attendees(ob: Obj) -> list[dict] | None:
-    """Count + records right after the +0x36c string (skipping strings stored there)."""
-    sp = ob.span(0x36C)
+    """Count + records right after the attendee anchor string (skipping strings stored there)."""
+    sp = ob.span(ob.at("attendees"))
     if not sp:
         return None
     o, pos = ob.raw, sp[1]
-    spans = [s for s in (ob.span(r) for r in _EVENT_STRINGS) if s]
+    spans = [s for s in (ob.span(r) for r in ob.at("strings")) if s]
     for _ in range(8):
         nxt = [e for s, e in spans if s == pos and e > pos]
         if not nxt:
@@ -614,22 +623,22 @@ def iter_events(store: Store) -> Iterator[HxEvent]:
             raw = store.first(details, lambda o: o.blob(0x258))
             body_html = raw.decode("utf-8", "replace").rstrip("\0") if raw else None
             join = store.first(details, lambda o: o.text(0x2BC))
-        etype = EVENT_TYPE.get(ob.u32(0x388), "unknown")
+        etype = EVENT_TYPE.get(ob.u32(ob.at("event_type")), "unknown")
         rrule = _recurrence(ob) if etype == "master" else None
-        flags = ob.raw[0x43A]
+        flags = ob.raw[ob.at("flags")]
         cal_name, cal_account = calendars.get(ob.u64(0xE0), (None, None))
         yield HxEvent(
             local_id=eid,
-            uid=store.first(c, lambda o: o.text(0x334)),
-            subject=store.first(c, lambda o: o.text(0x400)),
+            uid=store.first(c, lambda o: o.text(o.at("uid"))),
+            subject=store.first(c, lambda o: o.text(o.at("subject"))),
             start=ticks(ob.u64(0x248)),
             end=ticks(ob.u64(0x250)),
-            tz=ob.text(0x30C),
-            all_day=bool(flags & 0x08),
-            is_cancelled=bool(flags & 0x10),
-            location=ob.text(0x344),
-            organizer_name=ob.text(0x374),
-            organizer_addr=ob.text(0x37C),
+            tz=ob.text(ob.at("tz")),
+            all_day=bool(flags & ob.at("all_day_bit")),
+            is_cancelled=bool(flags & ob.at("cancelled_bit")),
+            location=ob.text(ob.at("location")),
+            organizer_name=ob.text(ob.at("org_name")),
+            organizer_addr=ob.text(ob.at("org_addr")),
             attendees=_attendees(ob) or [],
             body_html=body_html,
             preview=ob.text(0x2BC),
@@ -637,8 +646,8 @@ def iter_events(store: Store) -> Iterator[HxEvent]:
             event_type=etype,
             rrule=rrule,
             recurrence_unparsed=etype == "master" and rrule is None,
-            my_response=MY_RESPONSE.get(ob.u32(0x3E0)),
-            show_as=SHOW_AS.get(ob.u32(0x330)),
+            my_response=MY_RESPONSE.get(ob.u32(ob.at("response"))),
+            show_as=SHOW_AS.get(ob.u32(ob.at("show_as"))),
             calendar=cal_name,
             account=cal_account,
         )

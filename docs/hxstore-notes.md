@@ -33,13 +33,13 @@ The importer reads messages, recipients, folders, accounts, attachments (metadat
 
 | Offset | Value | Meaning | Confidence |
 |---|---|---|---|
-| 0x00 | `Nostromo` | magic | V |
-| 0x08 | `i` (0x69) | format version. The importer refuses other versions. | V |
-| 0x38 | 0x1000 | page size | V |
-| 0x50 | 0xdeadbeef | guard, repeated around 0x9c | V |
-| 0x28, 0x2c, 0x30, 0x40 | length, counter, CRC-32, offset | descriptor of a region at 0x3000. The CRC-32 at 0x30 matches that region. | V |
-| 0x68 to 0x78 | same shape | a second descriptor whose CRC does not match: probably a stale alternate slot | I |
-| 0x10 | u64 | called "live data size" elsewhere. It is not a bound: valid blocks exist past it. | V (refuted as bound) |
+| 0x00 | `Nostromo` | magic | same | V |
+| 0x08 | `i` (0x69) | format version. The importer refuses other versions. | same | V |
+| 0x38 | 0x1000 | page size | same | V |
+| 0x50 | 0xdeadbeef | guard, repeated around 0x9c | same | V |
+| 0x28, 0x2c, 0x30, 0x40 | length, counter, CRC-32, offset | descriptor of a region at 0x3000. The CRC-32 at 0x30 matches that region. | same | V |
+| 0x68 to 0x78 | same shape | a second descriptor whose CRC does not match: probably a stale alternate slot | same | I |
+| 0x10 | u64 | called "live data size" elsewhere. It is not a bound: valid blocks exist past it. | same | V (refuted as bound) |
 
 ### Blocks
 
@@ -91,20 +91,20 @@ Inside an inflated payload each object is preceded by a u32 length and often fol
 
 ### Classes used
 
-| Class | fs on 16.113.4 | fs on 16.114.3 | Meaning |
-|---|---|---|---|
-| 0x49 | 0x1992 | 0x19d0 | account (settings, primary SMTP address) |
-| 0x4a | 0x6ca | same | mail account |
-| 0x4d | 0x4c2 | 0x4d8 | folder |
-| 0x55 | 0x15e | same | recipient |
-| 0x68 | n/a | n/a | calendar |
-| 0x6b | 0x455 | same | calendar event |
-| 0x6c | 0x348 | same | event detail (body, join URL) |
-| 0xc9 | 0x60f | same | message |
-| 0xca | 0x740 | 0x74e | message body |
-| 0xf7 | 0xc5 | same | file reference |
-| 0x16a | 0x318 | same | attachment |
-| 0x4f | 0x430 | not checked | per-folder message list item (not imported) |
+| Class | fs on 16.113.4 | fs on 16.114.3 | fs on 16.115 | Meaning |
+|---|---|---|---|---|
+| 0x49 | 0x1992 | 0x19d0 | 0x1a12 | account (settings, primary SMTP address) |
+| 0x4a | 0x6ca | same | same | mail account |
+| 0x4d | 0x4c2 | 0x4d8 | same | folder |
+| 0x55 | 0x15e | same | same | recipient |
+| 0x68 | n/a | n/a | n/a | calendar |
+| 0x6b | 0x455 | same | 0x459 | calendar event |
+| 0x6c | 0x348 | same | same | event detail (body, join URL) |
+| 0xc9 | 0x60f | same | same | message |
+| 0xca | 0x740 | 0x74e | 0x752 | message body |
+| 0xf7 | 0xc5 | same | same | file reference |
+| 0x16a | 0x318 | same | 0x31e | attachment |
+| 0x4f | 0x430 | not checked | not checked | per-folder message list item (not imported) |
 
 **Layout guard.** Field offsets are known only for the sizes in this table (`EXPECTED_FS` in `importers/hxformat.py`). Both builds are accepted, per object: each object is read with the offsets of its own size (`FIELDS`), so copies written before and after an update can sit in one store. If any object of a listed class has a different fs, the import stops with an error that names the class, the found size and the expected size. Nothing is imported from that store, and the sync notification fires. The importer does not guess offsets for a changed layout. After an Outlook update triggers this, the offsets for the new size must be checked on a fresh snapshot.
 
@@ -189,6 +189,21 @@ The exact positions of the inserted bytes inside these ranges are not known, bec
 **A second HTML body at +0x67c (I).** In 16.114.3 the 0xca descriptor just before the body (+0x67c) also holds UTF-8 HTML. It equals +0x684 in 442 objects. Where the two differ (378), +0x67c is always longer: it is a full HTML document, while +0x684 is often a fragment. In 34 messages only +0x67c contains the preview text, so for those the imported body is shorter than what Outlook shows. If the body area moved by +0xc, as +0x684 did, then +0x67c is the old +0x670, which the importer never read on 16.113.4. Probably the full body versus a trimmed one (Graph's `body` and `uniqueBody`). The importer still reads +0x684, the field it read before.
 
 The first real sync after the change imported 266 messages dated 9 October to 3 November 2026 into Archive, Sent Items, Deleted Items and Inbox. `new-outlook doctor` reported `hxstore_layout` ok.
+
+## Outlook 16.115 layout change (2026-11-14)
+
+After the update to 16.115, four classes grew and the importer stopped with `HxStoreLayoutError`: 0x49 account 0x19d0 → 0x1a12, 0x6b event 0x455 → 0x459, 0xca body 0x74e → 0x752, 0x16a attachment 0x318 → 0x31e. Every object of these classes had the new size. The offsets were found on a copy taken with `new-outlook experiment start`, by trying each position the field could have moved to (0 up to the size increase) and keeping the one that matched values the archive had imported from 16.114.3 until 2026-11-12.
+
+| Class | Field | 16.114.3 | 16.115 | Evidence | Confidence |
+|---|---|---|---|---|---|
+| 0x49 account | primary SMTP address | +0x159c | +0x15d4 | Both accounts match the archived addresses. The duplicate copy moved with it, +0x15b4 → +0x15ec. | C |
+| 0xca body | HTML body, EFMData link | +0x684, +0x2ba | unchanged | 489 of 504 bodies the archive took from the cache are identical (11 lost their inline body, 4 changed). 43 links resolve to `EFMData` files. | V |
+| 0x16a attachment | all fields read | unchanged | unchanged | Name, size and content type match the archive for 601 of 601, Content-ID 516 of 516, file reference 593 of 596. The 6 extra bytes come after +0x2b4. | V |
+| 0x6b event | fields from +0x30c on | see Calendar | +0x4 | UID, subject, timezone, location, organizer, show-as, event type, my response and the attendee anchor (+0x36c → +0x370) match all 47 events matched by UID. Start, end, preview, the detail reference and the calendar id did not move. | V |
+| 0x6b event | all-day flag | byte +0x43a, bit 0x08 | byte +0x43e, bit 0x10 | Agrees with the midnight-to-midnight rule for 199 of 199 events, and with the archive for 47 of 47. The +4 byte's old bit 0x08 is never set. | V |
+| 0x6b event | cancelled flag | byte +0x43a, bit 0x10 | byte +0x43e, bit 0x20 | Agrees with the archive for 47 of 47, and with a cancellation prefix on the subject for 193 of 194. Only 2 cancelled events. | C |
+
+The event strings the attendee parser steps over moved too (+0x304 → +0x308 or +0x30c, +0x3d4 → +0x3d8); both candidates for the first are listed. With them, attendee counts match the archive for all 47 events. A dry-run decode then matched the archive for every event field on all 47 events, and subjects and accounts for all 728 messages already archived apart from Re:/FW: prefixes and messages moved between folders since.
 
 ## Attachments (class 0x16a)
 

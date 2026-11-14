@@ -136,7 +136,7 @@ ME = "me@uni.example.edu"
 def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = hx.FS_16_114) -> list[ObjSpec]:
     """Three messages, two attachments, three events. Files/ entries are created when with_files.
 
-    `sizes` picks the Outlook build's layout (hx.FS_16_113 or hx.FS_16_114).
+    `sizes` picks the Outlook build's layout (hx.FS_16_113, hx.FS_16_114 or hx.FS_16_115).
     """
 
     def at(cls: int, field: str) -> int:
@@ -188,14 +188,14 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         rcpt(0x6001, 0x5001, 0xCC, "Me", ME),
         rcpt(0x6002, 0x5001, 0xCD, "Ivan Synth", "ivan@example.net"),
         rcpt(0x6003, 0x5001, 0x19D, "Hana Synth", "hana@example.org"),  # reply-to, not a recipient
-        ObjSpec(hx.C_ATTACHMENT, 0x7001, refs={0x1A2: (hx.C_MESSAGE, 0x5001)},
+        ObjSpec(hx.C_ATTACHMENT, 0x7001, fs=sizes[hx.C_ATTACHMENT], refs={0x1A2: (hx.C_MESSAGE, 0x5001)},
                 strings={0x260: "agenda.pdf", 0x240: "", 0x288: att_ref}, area_one_strings={0x250: "application/pdf"},
                 u64s={0x238: 19}, u32s={0x2B0: 0, 0x270: 2}),
-        ObjSpec(hx.C_ATTACHMENT, 0x7002, refs={0x1A2: (hx.C_MESSAGE, 0x5001)},
+        ObjSpec(hx.C_ATTACHMENT, 0x7002, fs=sizes[hx.C_ATTACHMENT], refs={0x1A2: (hx.C_MESSAGE, 0x5001)},
                 strings={0x260: "slides.pptx", 0x288: missing_ref},
                 area_one_strings={0x250: "application/vnd.openxmlformats-officedocument.presentationml.presentation"},
                 u64s={0x238: 5000}, u32s={0x2B0: 0, 0x270: 5}),
-        ObjSpec(hx.C_ATTACHMENT, 0x7003, refs={0x1A2: (hx.C_MESSAGE, 0x5001)},
+        ObjSpec(hx.C_ATTACHMENT, 0x7003, fs=sizes[hx.C_ATTACHMENT], refs={0x1A2: (hx.C_MESSAGE, 0x5001)},
                 strings={0x260: "logo.png", 0x240: "logo@synthetic", 0x288: "~/Files/S0/3/Attachments/0/logo[3].png"},
                 area_one_strings={0x250: "image/png"}, u64s={0x238: 900}, u32s={0x2B0: 2, 0x270: 2}),
         # m2: my reply in Sent Items; same Message-ID as a legacy message would dedupe.
@@ -216,24 +216,28 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         ObjSpec(hx.C_CALENDAR, CALENDAR, owner=ACCOUNT, fs=0x330, strings={0x30C: "Calendar", 0x2C8: ME}),
     ]
 
-    def event(oid, *, uid, subject, start, end, tz="Europe/Prague", flags=0, etype=0, show_as=2, response=0,
-              organizer=("Hana Synth", "hana@example.org"), attendees=(), area_one=b"", detail=None,
-              location=None):
-        o = ObjSpec(hx.C_EVENT, oid, owner=CALENDAR, area_one_raw=area_one,
-                    strings={0x400: subject, 0x374: organizer[0], 0x37C: organizer[1], 0x36C: subject},
-                    area_one_strings={0x334: uid, 0x30C: tz},
+    def event(oid, *, uid, subject, start, end, tz="Europe/Prague", all_day=False, cancelled=False, etype=0,
+              show_as=2, response=0, organizer=("Hana Synth", "hana@example.org"), attendees=(), area_one=b"",
+              detail=None, location=None):
+        ev = lambda field: at(hx.C_EVENT, field)  # noqa: E731
+        anchor = ev("attendees")
+        flags = (ev("all_day_bit") if all_day else 0) | (ev("cancelled_bit") if cancelled else 0)
+        o = ObjSpec(hx.C_EVENT, oid, owner=CALENDAR, fs=sizes[hx.C_EVENT], area_one_raw=area_one,
+                    strings={ev("subject"): subject, ev("org_name"): organizer[0], ev("org_addr"): organizer[1],
+                             anchor: subject},
+                    area_one_strings={ev("uid"): uid, ev("tz"): tz},
                     u64s={0x248: ticks(start), 0x250: ticks(end), 0xE0: CALENDAR},
-                    u32s={0x388: etype, 0x330: show_as, 0x3E0: response},
-                    bytes_at={0x43A: flags})
+                    u32s={ev("event_type"): etype, ev("show_as"): show_as, ev("response"): response},
+                    bytes_at={ev("flags"): flags})
         if location:
-            o.strings[0x344] = location
+            o.strings[ev("location")] = location
         recs = struct.pack("<I", len(attendees))
         for name, addr, optional, resp in attendees:
             n, a = name.encode("utf-16-le"), addr.encode("utf-16-le")
             recs += bytes([len(n)]) + n + bytes([len(a)]) + a + struct.pack("<III", optional, resp, 0)
-        o.tail, o.tail_after = recs, 0x36C
-        # The +0x36c string must be the last string so the attendee list follows it.
-        o.strings = {k: v for k, v in o.strings.items() if k != 0x36C} | {0x36C: subject}
+        o.tail, o.tail_after = recs, anchor
+        # The anchor string must be the last string so the attendee list follows it.
+        o.strings = {k: v for k, v in o.strings.items() if k != anchor} | {anchor: subject}
         if detail:
             o.u64s[0xB4] = detail
         return o
@@ -253,7 +257,7 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
               etype=3, response=3, organizer=("Me", ME), area_one=weekly),
         event(0x9003, uid="040000008200E00074C5B7101A82E008000000003333", subject="Holiday",
               start=datetime(2026, 9, 10, tzinfo=timezone.utc), end=datetime(2026, 9, 11, tzinfo=timezone.utc),
-              flags=0x08, show_as=0),
+              all_day=True, show_as=0),
         event(0x9004, uid="", subject="", start=datetime(2026, 9, 12, tzinfo=timezone.utc),
               end=datetime(2026, 9, 12, tzinfo=timezone.utc)),
     ]

@@ -57,17 +57,47 @@ FS_16_113 = {
     C_EVENT_DETAIL: 0x348, C_MESSAGE: 0x60F, C_BODY: 0x740, C_FILE: 0xC5, C_ATTACHMENT: 0x318,
 }
 FS_16_114 = FS_16_113 | {C_ACCOUNT: 0x19D0, C_FOLDER: 0x4D8, C_BODY: 0x74E}
-EXPECTED_FS = {c: tuple(sorted({FS_16_113[c], FS_16_114[c]})) for c in FS_16_113}
+FS_16_115 = FS_16_114 | {C_ACCOUNT: 0x1A12, C_EVENT: 0x459, C_BODY: 0x752, C_ATTACHMENT: 0x31E}
+BUILDS = {"16.113.4": FS_16_113, "16.114.3": FS_16_114, "16.115": FS_16_115}  # oldest first
+EXPECTED_FS = {c: tuple(sorted({b[c] for b in BUILDS.values()})) for c in FS_16_113}
 
-# Field offsets that differ between those sizes, keyed by (class, fs). The other offsets did not move.
+# Field offsets per layout, keyed by (class, fs). Every offset the decoder reads is here, so a new
+# layout is data only: add its sizes to BUILDS and its offsets below (`new-outlook layout-probe` proposes them).
+_MESSAGE = {"key": 0x58C, "subject": 0x598, "topic": 0x4EC, "from_name": 0x56C, "from_addr": 0x574,
+            "message_id": 0x4CC, "in_reply_to": 0x4BC, "message_class": 0x4D4, "preview": 0x518,
+            "sent": 0x2D8, "received": 0x120, "modified": 0x178, "folder_ref": 0x382, "flags": 0x5E6,
+            "has_attachment_bit": 0x40}
+_RECIPIENT = {"name": 0x124, "addr": 0x12C}
+_ATTACHMENT = {"message_ref": 0x1A2, "name": 0x260, "size": 0x238, "content_type": 0x250, "content_id": 0x240,
+               "inline": 0x2B0, "file_ref": 0x288, "download_state": 0x270}
+_MAIL_ACCOUNT = {"account": 0x44}
+_FILE = {"path": 0x88}
+_EVENT_DETAIL = {"html": 0x258, "join_url": 0x2BC}
+_EVENT_FIXED = {"start": 0x248, "end": 0x250, "preview": 0x2BC, "detail": 0xB4, "calendar": 0xE0}
 FIELDS = {
     (C_ACCOUNT, 0x1992): {"smtp": 0x156C},
     (C_ACCOUNT, 0x19D0): {"smtp": 0x159C},
+    (C_ACCOUNT, 0x1A12): {"smtp": 0x15D4},
     (C_FOLDER, 0x4C2): {"name": 0x434, "type": 0x47C},
     (C_FOLDER, 0x4D8): {"name": 0x448, "type": 0x490},
     (C_BODY, 0x740): {"html": 0x678, "file": 0x2B2},
     (C_BODY, 0x74E): {"html": 0x684, "file": 0x2BA},
+    (C_BODY, 0x752): {"html": 0x684, "file": 0x2BA},
+    # Event fields from +0x30c on moved 4 bytes in 16.115, and the all-day and cancelled flags moved up one bit.
+    (C_EVENT, 0x455): _EVENT_FIXED | {"uid": 0x334, "subject": 0x400, "tz": 0x30C, "location": 0x344, "org_name": 0x374,
+                       "org_addr": 0x37C, "attendees": 0x36C, "show_as": 0x330, "event_type": 0x388,
+                       "response": 0x3E0, "flags": 0x43A, "all_day_bit": 0x08, "cancelled_bit": 0x10,
+                       "strings": (0x2BC, 0x304, 0x344, 0x374, 0x37C, 0x3D4, 0x400)},
+    (C_EVENT, 0x459): _EVENT_FIXED | {"uid": 0x338, "subject": 0x404, "tz": 0x310, "location": 0x348, "org_name": 0x378,
+                       "org_addr": 0x380, "attendees": 0x370, "show_as": 0x334, "event_type": 0x38C,
+                       "response": 0x3E4, "flags": 0x43E, "all_day_bit": 0x10, "cancelled_bit": 0x20,
+                       "strings": (0x2BC, 0x308, 0x30C, 0x348, 0x378, 0x380, 0x3D8, 0x404)},
 }
+# Classes whose offsets are the same in every build so far.
+for _cls, _fields in ((C_MESSAGE, _MESSAGE), (C_RECIPIENT, _RECIPIENT), (C_ATTACHMENT, _ATTACHMENT),
+                      (C_MAIL_ACCOUNT, _MAIL_ACCOUNT), (C_FILE, _FILE), (C_EVENT_DETAIL, _EVENT_DETAIL)):
+    for _fs in EXPECTED_FS[_cls]:
+        FIELDS.setdefault((_cls, _fs), _fields)
 
 RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0x19D: "reply_to"}
 WELL_KNOWN_FOLDER = {0x61: "inbox", 0x63: "archive", 0x64: "drafts", 0x65: "sentitems", 0x67: "deleteditems"}
@@ -100,7 +130,8 @@ class HxStoreLayoutError(HxStoreFormatError):
             for (c, fs), n in sorted(self.mismatches.items())
         )
         super().__init__(f"HxStore layout changed, refusing to import ({parts}). "
-                         "Outlook was probably updated; the decoder needs new offsets.")
+                         "Outlook was probably updated; the decoder needs new offsets. "
+                         "`new-outlook layout-probe` proposes them.")
 
 
 # ------------------------------------------------------------------- LZ4
@@ -421,7 +452,7 @@ class HxMessage:
 def _accounts(store: Store) -> tuple[dict[int, str | None], dict[int, str | None]]:
     """0x49 account -> primary SMTP address; 0x4a mail account -> that address (via u64 at +0x44)."""
     acct = {i: store.first(c, lambda o: o.text(o.at("smtp"))) for i, c in store.by_class[C_ACCOUNT].items()}
-    mail = {i: acct.get(store.latest(c).u64(0x44)) for i, c in store.by_class[C_MAIL_ACCOUNT].items()}
+    mail = {i: acct.get((lambda o: o.u64(o.at("account")))(store.latest(c))) for i, c in store.by_class[C_MAIL_ACCOUNT].items()}
     return acct, mail
 
 
@@ -443,23 +474,23 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
         ob = store.latest(c)
         kind = RECIPIENT_KIND.get(ob.kind)
         if kind:
-            rcpts[ob.owner][kind].append((rid, (ob.text(0x124), ob.text(0x12C))))
+            rcpts[ob.owner][kind].append((rid, (ob.text(ob.at("name")), ob.text(ob.at("addr")))))
     atts: dict[int, list[HxAttachment]] = collections.defaultdict(list)
     for aid, c in store.by_class[C_ATTACHMENT].items():
         ob = store.latest(c)
-        atts[ob.u64(0x1A2 + 10)].append(HxAttachment(
+        atts[ob.u64(ob.at("message_ref") + 10)].append(HxAttachment(
             local_id=aid,
-            name=store.first(c, lambda o: o.text(0x260)),
-            size=ob.u64(0x238) or None,
-            content_type=store.first(c, lambda o: o.text(0x250)),
-            content_id=store.first(c, lambda o: o.text(0x240)),
-            is_inline=ob.u32(0x2B0) == 2,
-            file_ref=store.first(c, lambda o: o.text(0x288)),
-            download_state=ob.u32(0x270),
+            name=store.first(c, lambda o: o.text(o.at("name"))),
+            size=ob.u64(ob.at("size")) or None,
+            content_type=store.first(c, lambda o: o.text(o.at("content_type"))),
+            content_id=store.first(c, lambda o: o.text(o.at("content_id"))),
+            is_inline=ob.u32(ob.at("inline")) == 2,
+            file_ref=store.first(c, lambda o: o.text(o.at("file_ref"))),
+            download_state=ob.u32(ob.at("download_state")),
         ))
     for mid, c in store.by_class[C_MESSAGE].items():
         ob = store.latest(c)
-        imm = store.first(c, lambda o: (lambda b: b if b and len(b) == 51 else None)(o.blob(0x58C)))
+        imm = store.first(c, lambda o: (lambda b: b if b and len(b) == 51 else None)(o.blob(o.at("key"))))
         body_html = body_file = None
         bodies = store.copies(C_BODY, mid)
         if bodies:
@@ -469,32 +500,32 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
             def _bfile(o: Obj) -> str | None:
                 fid = o.ref_id(o.at("file"), C_FILE)
                 fc = store.copies(C_FILE, fid) if fid is not None else []
-                return store.first(fc, lambda f: f.text(0x88)) if fc else None
+                return store.first(fc, lambda f: f.text(f.at("path"))) if fc else None
 
             body_file = store.first(bodies, _bfile)
-        fname, ftype = folders.get(ob.u64(0x382 + 10), (None, None))
+        fname, ftype = folders.get(ob.u64(ob.at("folder_ref") + 10), (None, None))
         rc = rcpts.get(mid, {})
         yield HxMessage(
             local_id=mid,
             key=("imm:" + base64.urlsafe_b64encode(imm).decode()) if imm else f"hx:{mid:x}",
-            subject=store.first(c, lambda o: o.text(0x598)) or store.first(c, lambda o: o.text(0x4EC)),
-            from_name=store.first(c, lambda o: o.text(0x56C)),
-            from_addr=store.first(c, lambda o: o.text(0x574)),
+            subject=store.first(c, lambda o: o.text(o.at("subject"))) or store.first(c, lambda o: o.text(o.at("topic"))),
+            from_name=store.first(c, lambda o: o.text(o.at("from_name"))),
+            from_addr=store.first(c, lambda o: o.text(o.at("from_addr"))),
             to=[r for _, r in sorted(rc.get("to", []))],
             cc=[r for _, r in sorted(rc.get("cc", []))],
-            date_sent=ticks(ob.u64(0x2D8)),
-            date_received=ticks(ob.u64(0x120)),
-            last_modified=ticks(ob.u64(0x178)),
+            date_sent=ticks(ob.u64(ob.at("sent"))),
+            date_received=ticks(ob.u64(ob.at("received"))),
+            last_modified=ticks(ob.u64(ob.at("modified"))),
             folder=fname,
             folder_type=ftype,
             account=mail_accounts.get(ob.owner),
-            message_id=store.first(c, lambda o: o.text(0x4CC)),
-            in_reply_to=store.first(c, lambda o: o.text(0x4BC)),
-            message_class=store.first(c, lambda o: o.text(0x4D4)),
-            preview=store.first(c, lambda o: o.text(0x518)),
+            message_id=store.first(c, lambda o: o.text(o.at("message_id"))),
+            in_reply_to=store.first(c, lambda o: o.text(o.at("in_reply_to"))),
+            message_class=store.first(c, lambda o: o.text(o.at("message_class"))),
+            preview=store.first(c, lambda o: o.text(o.at("preview"))),
             body_html=body_html,
             body_file_ref=body_file,
-            has_attachment=bool(ob.raw[0x5E6] & 0x40),
+            has_attachment=bool(ob.raw[ob.at("flags")] & ob.at("has_attachment_bit")),
             attachments=atts.get(mid, []),
         )
 
@@ -527,16 +558,13 @@ class HxEvent:
     account: str | None
 
 
-_EVENT_STRINGS = (0x2BC, 0x304, 0x344, 0x374, 0x37C, 0x3D4, 0x400)
-
-
 def _attendees(ob: Obj) -> list[dict] | None:
-    """Count + records right after the +0x36c string (skipping strings stored there)."""
-    sp = ob.span(0x36C)
+    """Count + records right after the attendee anchor string (skipping strings stored there)."""
+    sp = ob.span(ob.at("attendees"))
     if not sp:
         return None
     o, pos = ob.raw, sp[1]
-    spans = [s for s in (ob.span(r) for r in _EVENT_STRINGS) if s]
+    spans = [s for s in (ob.span(r) for r in ob.at("strings")) if s]
     for _ in range(8):
         nxt = [e for s, e in spans if s == pos and e > pos]
         if not nxt:
@@ -608,37 +636,37 @@ def iter_events(store: Store) -> Iterator[HxEvent]:
         calendars[cid] = (store.first(c, lambda o: o.text(0x30C)), acc)
     for eid, c in store.by_class[C_EVENT].items():
         ob = store.latest(c)
-        details = store.copies(C_EVENT_DETAIL, ob.u64(0xB4))
+        details = store.copies(C_EVENT_DETAIL, ob.u64(ob.at("detail")))
         body_html = join = None
         if details:
-            raw = store.first(details, lambda o: o.blob(0x258))
+            raw = store.first(details, lambda o: o.blob(o.at("html")))
             body_html = raw.decode("utf-8", "replace").rstrip("\0") if raw else None
-            join = store.first(details, lambda o: o.text(0x2BC))
-        etype = EVENT_TYPE.get(ob.u32(0x388), "unknown")
+            join = store.first(details, lambda o: o.text(o.at("join_url")))
+        etype = EVENT_TYPE.get(ob.u32(ob.at("event_type")), "unknown")
         rrule = _recurrence(ob) if etype == "master" else None
-        flags = ob.raw[0x43A]
-        cal_name, cal_account = calendars.get(ob.u64(0xE0), (None, None))
+        flags = ob.raw[ob.at("flags")]
+        cal_name, cal_account = calendars.get(ob.u64(ob.at("calendar")), (None, None))
         yield HxEvent(
             local_id=eid,
-            uid=store.first(c, lambda o: o.text(0x334)),
-            subject=store.first(c, lambda o: o.text(0x400)),
-            start=ticks(ob.u64(0x248)),
-            end=ticks(ob.u64(0x250)),
-            tz=ob.text(0x30C),
-            all_day=bool(flags & 0x08),
-            is_cancelled=bool(flags & 0x10),
-            location=ob.text(0x344),
-            organizer_name=ob.text(0x374),
-            organizer_addr=ob.text(0x37C),
+            uid=store.first(c, lambda o: o.text(o.at("uid"))),
+            subject=store.first(c, lambda o: o.text(o.at("subject"))),
+            start=ticks(ob.u64(ob.at("start"))),
+            end=ticks(ob.u64(ob.at("end"))),
+            tz=ob.text(ob.at("tz")),
+            all_day=bool(flags & ob.at("all_day_bit")),
+            is_cancelled=bool(flags & ob.at("cancelled_bit")),
+            location=ob.text(ob.at("location")),
+            organizer_name=ob.text(ob.at("org_name")),
+            organizer_addr=ob.text(ob.at("org_addr")),
             attendees=_attendees(ob) or [],
             body_html=body_html,
-            preview=ob.text(0x2BC),
+            preview=ob.text(ob.at("preview")),
             online_meeting_url=join,
             event_type=etype,
             rrule=rrule,
             recurrence_unparsed=etype == "master" and rrule is None,
-            my_response=MY_RESPONSE.get(ob.u32(0x3E0)),
-            show_as=SHOW_AS.get(ob.u32(0x330)),
+            my_response=MY_RESPONSE.get(ob.u32(ob.at("response"))),
+            show_as=SHOW_AS.get(ob.u32(ob.at("show_as"))),
             calendar=cal_name,
             account=cal_account,
         )

@@ -62,7 +62,8 @@ def test_layout_change_is_reported_as_drift(archive, tmp_path):
     assert archive.counts()["messages"] == 0 and archive.counts()["events"] == 0
 
 
-@pytest.mark.parametrize("sizes", [hxformat.FS_16_113, hxformat.FS_16_114], ids=["16.113.4", "16.114.3"])
+@pytest.mark.parametrize("sizes", [hxformat.FS_16_113, hxformat.FS_16_114, hxformat.FS_16_115],
+                         ids=["16.113.4", "16.114.3", "16.115"])
 def test_each_build_reads_its_own_offsets(tmp_path, sizes):
     p = tmp_path / "Main Profile"
     p.mkdir()
@@ -262,3 +263,28 @@ def test_snapshot_command_writes_files_listing(profile, tmp_path, capsys):
     assert listing[0] == "path\tsize\tmtime_utc"
     assert any(line.startswith("S0/3/Attachments/0/agenda[1].pdf\t19\t") for line in listing)
     assert (snap / "attempt1" / "HxStore.hxd").exists()
+
+
+@pytest.mark.parametrize("sizes", [hxformat.FS_16_114, hxformat.FS_16_115], ids=["16.114.3", "16.115"])
+def test_each_build_reads_its_own_event_and_attachment_offsets(tmp_path, sizes):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    write_store(p / "HxStore.hxd", mailbox(p, sizes=sizes))
+    store = hxformat.Store(p / "HxStore.hxd")
+    events = {e.local_id: e for e in hxformat.iter_events(store)}
+    ws, hol = events[0x9001], events[0x9003]
+    assert (ws.subject, ws.tz, ws.location, ws.organizer_addr) == ("Workshop", "Europe/Prague", "Lab 2", "hana@example.org")
+    assert [a["addr"] for a in ws.attendees] == [ME, "ivan@example.net"] and ws.show_as == "busy"
+    assert (hol.all_day, hol.is_cancelled, hol.show_as) == (True, False, "free")
+    assert events[0x9002].event_type == "master" and events[0x9002].my_response == "organizer"
+    atts = {a.name: a for m in hxformat.iter_messages(store) for a in m.attachments}
+    assert atts["agenda.pdf"].content_type == "application/pdf" and atts["logo.png"].is_inline
+
+
+def test_16_115_flag_bits_are_not_read_with_the_old_bit(tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    write_store(p / "HxStore.hxd", mailbox(p, sizes=hxformat.FS_16_115))
+    hol = {e.local_id: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}[0x9003]
+    assert hol.all_day and not hol.is_cancelled
+    assert hxformat.FIELDS[(hxformat.C_EVENT, 0x459)]["all_day_bit"] == 0x10

@@ -164,7 +164,7 @@ def _pairs_message(tr: Truth, fs: int):
     rows = {}
     for mid, pk in tr.message_pk().items():
         r = tr.row("SELECT subject, from_name, from_addr, message_id, date_ts, has_attachment, body_text, first_source,"
-                   " importance, flag_status, categories_json FROM messages"
+                   " importance, flag_status, categories_json, sender_name, sender_addr FROM messages"
                    " WHERE id = ?", pk)
         if r is not None:
             rows[mid] = r
@@ -197,6 +197,8 @@ def _message_fields(tr: Truth, fs: int):
         "modified": ([(o, None) for o, _ in pairs], lambda o, off, t: 9.4e8 < _ticks(o.u64(off)) < 4.1e9),
         # Most mail has normal importance, no flag and no category, so these usually come out
         # ambiguous and are then placed by their neighbours or by hand.
+        "sender_addr": ([(o, r["sender_addr"]) for o, r in pairs if r["sender_addr"]], _text_ieq),
+        "sender_name": ([(o, r["sender_name"]) for o, r in pairs if r["sender_name"]], _text_eq),
         "importance": ([(o, r["importance"]) for o, r in pairs if r["importance"]],
                        lambda o, off, t: hx.IMPORTANCE.get(o.u32(off)) == t),
         "flag_status": ([(o, r["flag_status"]) for o, r in pairs if r["flag_status"]],
@@ -250,6 +252,9 @@ def _body_fields(tr: Truth, fs: int):
     return {
         # Sparse: a body kept in an EFMData file has no inline HTML in the object.
         "html": (pairs, lambda o, off, t: (o.blob(off) or b"").decode("utf-8", "replace") == t, {"sparse": True}),
+        # The full body is a whole HTML document that contains the text of the part the archive imported.
+        "html_full": (pairs, lambda o, off, t: (o.blob(off) or b"")[:200].lstrip().lower().startswith((b"<html", b"<!doctype")),
+                      {"sparse": True}),
         "file": (efm, _ref(hx.C_FILE), {"sparse": True}),
     }
 

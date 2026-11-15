@@ -451,6 +451,8 @@ def get_email(
         "body_length": len(body),
         "truncated": offset + len(chunk) < len(body),
     }
+    if row["sender_addr"]:
+        out["sent_by"] = _addr(row["sender_name"], row["sender_addr"])  # sent on behalf of `from`
     if row["flag_due"]:
         out["flag_due"] = row["flag_due"]
     if row["flag_completed"]:

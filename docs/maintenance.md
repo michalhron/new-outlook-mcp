@@ -13,7 +13,9 @@
 - A meeting you declined disappears from New Outlook's cache, so it is not in the archive's calendar unless a sync saw it before you answered.
 - Orphan files carry the date of the file and have no sender or folder.
 - Free/busy covers only your own calendar.
-- `hxcore.hfl`, New Outlook's journal, is copied but not parsed. Very recent changes may live only there until Outlook writes them into `HxStore.hxd`.
+- Changes in Outlook reach its cache file within about a minute, and the archive with the sync after that. (`hxcore.hfl` turned out to be a diagnostic log, not a journal, so there is nothing fresher to read.)
+- The body of a New Outlook message is the part that message added. Quoted history is left out unless that is all Outlook stored.
+- Folders are flat, by name: where New Outlook stores nesting has not been found.
 - Search by meaning has no similarity cutoff, does not re-embed messages that a later sync completes, and does not cover orphan files. See [semantic-search.md](semantic-search.md#limits).
 
 ## When an Outlook update breaks the import

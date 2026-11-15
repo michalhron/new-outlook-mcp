@@ -68,7 +68,9 @@ CREATE TABLE IF NOT EXISTS messages (
     flag_status TEXT,       -- none, flagged, complete
     flag_due TEXT,          -- ISO 8601 UTC
     flag_completed TEXT,    -- ISO 8601 UTC
-    categories_json TEXT    -- JSON list of category names
+    categories_json TEXT,   -- JSON list of category names
+    sender_name TEXT,       -- Sender header, only when it differs from From
+    sender_addr TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date_ts);
 CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(message_id);
@@ -537,6 +539,8 @@ class Archive:
             "body_text": rec.body_text,
             "body_html": rec.body_html,
             "is_read": None if rec.is_read is None else int(rec.is_read),
+            "sender_name": rec.sender_name,
+            "sender_addr": rec.sender_addr.lower() if rec.sender_addr else None,
             "importance": rec.importance,
             "flag_status": rec.flag_status,
             "flag_due": rec.flag_due.astimezone(timezone.utc).isoformat() if rec.flag_due else None,

@@ -117,7 +117,7 @@ The scheduled sync cannot quit Outlook, so it copies `HxStore.hxd` and `hxcore.h
 - Each block carries two CRC-32s. A block caught mid-write fails one of them and is skipped. Most objects exist in two or three copies in other blocks, and the importer keeps the newest copy that decoded. One torn block therefore rarely loses an object. At worst, the latest change to that object is missing until the next sync.
 - A quiet store has about 0.1% failed blocks (4 of 5,531 on the sample). When more than 2% fail (and at least 5 blocks), the importer waits 2 seconds, copies again and keeps the better copy. If the second copy is also bad, the sync goes ahead and reports a warning.
 - Each sync records its numbers in `sync_runs.details_json` and prints them: blocks found, ok, CRC-failed and LZ4-failed, copies taken, whether `hxcore.hfl` was copied, and distinct objects per class. New and merged messages are in the normal sync counts.
-- `hxcore.hfl` is copied next to the store copy but not parsed yet (see below).
+- `hxcore.hfl` is copied next to the store copy but not parsed: it is a diagnostic log (see below).
 
 ## Cache coverage
 
@@ -141,19 +141,16 @@ Measured on 16.115 with three before/after pairs. Counts only.
 - **Search results are temporary.** The next search removed 534 of the first search's 804 messages from the cache again. The archive keeps what a sync saw, so a sync has to run between searches; the watcher and the `fetch_from_outlook` tool both do.
 - Bodies of older mail often survive as orphan `EFMData` files. When a search brings the message header back, the importer matches it to its body file again.
 
-## hxcore.hfl: write-ahead log or not?
+## hxcore.hfl: a diagnostic log, not a journal (2026-11-15)
 
-The sample did not include `hxcore.hfl`. Public notes say it is about 50 MB and starts with `08 00 00 00 00 00 01 00`, and none decode it. If it is a write-ahead log, recent changes could sit there before they reach `HxStore.hxd`, and a sync that reads only the store would lag behind.
+Looked at in more than 20 copies taken during one day on Outlook 16.115, next to the store copies of the same moments. Structure only.
 
-Plan for the snapshot pair (structure only, on copies):
+- **It is append-only, then wraps.** Between two copies the newer file is the older one plus appended bytes (checked on 6 pairs; it grew from 22.6 MB to 52.4 MB in the day). At about 50 MiB it stops growing and is overwritten from the start.
+- **It holds no store data.** No block magic, no object envelopes beyond chance hits, no "unset" timestamp value, and none of the synthetic subjects that were created, flagged, moved and deleted that day, in UTF-16 or UTF-8. The object ids of the test messages do not occur.
+- **What it holds** are repeated trace tokens such as `SmartSync`, `HttpSocketResponse`, `ApplyStorageThreadCha…`, `Completed`, and a build string at the start: a log of sync activity. The header starts `08 00 00 00 00 00 01 00`, followed by a u64 tick time.
+- **The store itself is fresh.** Every one of about 25 test actions that day (new mail, read and flag toggles, categories, moves, new and changed events) was in `HxStore.hxd` in the copy taken about a minute later. The one thing seen late was a moved occurrence, and that waited in queue objects (class 0x4008) inside the store, not in this file.
 
-1. Size and mtime. List both files before and after a new message arrives. If `hxcore.hfl` grows or changes first and `HxStore.hxd` only later (or after Outlook quits), that is log behaviour.
-2. Block magic. Search `hxcore.hfl` for the block magic `05 6a 70 3b 64 45 02 5d`. If it holds whole CRC-valid blocks, run the same block decoder over it and compare object ids and change stamps with the store.
-3. Probe object. Find the probe message's id in the "after" copy (by its synthetic subject). Check where its newest copy lives: only in `hxcore.hfl`, only in `HxStore.hxd`, or both.
-4. Stamps. For objects in both files, compare the +0x70 change stamps. Higher stamps in `hxcore.hfl` mean it holds newer versions the store does not have yet.
-5. Rollover. Note whether `hxcore.hfl` shrinks or resets after Outlook quits or after some time (a checkpoint).
-
-If it is a log with valid blocks, the importer can decode it like the store and prefer the higher stamp per object. The copy step already captures both files from the same moment.
+So parsing `hxcore.hfl` would not make the archive fresher, and no parser is planned. The sync still copies it next to the store copy; that copy is no longer needed.
 
 ## Messages (class 0xc9)
 
@@ -163,7 +160,7 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 | Subject | +0x598 | V |
 | Subject without Re:/Fw: prefix | +0x4ec | C |
 | From name, address | +0x56c, +0x574 | V |
-| Second name/address pair | +0x440, +0x448. Differs from From in about a quarter of messages: probably Sender or on-behalf-of. | I |
+| Sender (name, address) | +0x440, +0x448: the `Sender` header, present when a list or a delegate sent the message on behalf of From. Equals the Sender header the legacy archive stored in 120 of 122 messages that have the pair and legacy headers; the other 2 have no Sender header. The From field equals the From header in all 120. Empty otherwise. | V |
 | Internet Message-ID | +0x4cc, `<…@…>` form. Almost unique (5 duplicates in 948, for example a message in two folders). Used for dedup with the legacy archive. | V |
 | In-Reply-To | +0x4bc | C |
 | Message class | +0x4d4 (`IPM.Note` etc.) | V |
@@ -186,7 +183,9 @@ Offsets in the sections below are for 16.113.4. For the account, folder and body
 
 **Bodies** are 0xca objects with the same id as the message. Descriptor +0x678 holds the UTF-8 HTML body. When the body is too large, a typed reference at +0x2b2 points to a 0xf7 file object whose +0x88 string is `~/Files/S0/<n>/EFMData/<k>.dat`. That file is gzip-compressed HTML (per teamscrawl, see below). `~` means the profile folder that holds HxStore.hxd. (V for the link, I for gzip until checked on a real file.) No plain-text body was seen.
 
-**Folders** (0x4d): name at +0x434. A u32 at +0x47c gives the well-known type independent of language: 0x61 Inbox, 0x63 Archive, 0x64 Drafts, 0x65 Sent Items, 0x67 Deleted Items. 0x62 and 0x66 are unknown; 0x7a is an ordinary folder. (V)
+**Folders** (0x4d): name at +0x434. A u32 at +0x47c gives the well-known type independent of language: 0x61 Inbox, 0x63 Archive, 0x64 Drafts, 0x65 Sent Items, 0x67 Deleted Items. 0x66 is the Snoozed folder (both folders of that type carry that name; C). 0x62 is unknown: three unnamed folders without messages. 0x7a is an ordinary folder, 0 appears on four. (V for the named types)
+
+**Folder hierarchy: not found.** A folder's parent id (+0x20) is not another folder. Of 143 folders, 106 hang under one shared root object with parent property 0x2ab, 20 under a mail account (0x4a, property 0x2), 9 under a 0x48 object (0x2ac) and 8 under 0x172 objects. No u64 or typed reference in any folder's fixed region holds another folder's id, so nesting is not stored as a parent pointer in the folder object. The importer keeps folders flat, by name.
 
 ## Outlook 16.114.3 layout change
 
@@ -202,7 +201,17 @@ After Outlook for Mac updated to 16.114.3, three classes grew and the importer s
 
 The exact positions of the inserted bytes inside these ranges are not known, because no 16.113.4 copy of the store was kept. Only the fields the importer reads were placed.
 
-**A second HTML body at +0x67c (I).** In 16.114.3 the 0xca descriptor just before the body (+0x67c) also holds UTF-8 HTML. It equals +0x684 in 442 objects. Where the two differ (378), +0x67c is always longer: it is a full HTML document, while +0x684 is often a fragment. In 34 messages only +0x67c contains the preview text, so for those the imported body is shorter than what Outlook shows. If the body area moved by +0xc, as +0x684 did, then +0x67c is the old +0x670, which the importer never read on 16.113.4. Probably the full body versus a trimmed one (Graph's `body` and `uniqueBody`). The importer still reads +0x684, the field it read before.
+**The full body at +0x67c (V, 2026-11-15).** Settled on a 16.115 copy with 716 body objects that hold HTML. +0x67c is the whole message as Outlook shows it, with quoted history; +0x684 is only what this message added (Graph calls them `body` and `uniqueBody`).
+
+- 368 objects hold the same bytes in both. In 322 they differ, and in every one of those +0x67c is longer and a complete HTML document while +0x684 is a fragment.
+- The text of +0x684 is contained in the text of +0x67c in 319 of the 322; the other 3 have the same text.
+- 312 of the 322 are replies, and +0x67c has more quoted "From:" header lines in 292.
+- 35 objects have only +0x67c, 26 only +0x684.
+- Not done: comparing a synthetic reply side by side with Outlook's window.
+
+The importer keeps +0x684 as the body, so search and threads are not flooded with repeated quoted text, and now falls back to +0x67c when +0x684 is empty (those 35 messages had only their preview before). Not located on 16.113.4.
+
+Earlier note (2026-11-03), kept for the record: In 16.114.3 the 0xca descriptor just before the body (+0x67c) also holds UTF-8 HTML. It equals +0x684 in 442 objects. Where the two differ (378), +0x67c is always longer: it is a full HTML document, while +0x684 is often a fragment. In 34 messages only +0x67c contains the preview text, so for those the imported body is shorter than what Outlook shows. If the body area moved by +0xc, as +0x684 did, then +0x67c is the old +0x670, which the importer never read on 16.113.4. Probably the full body versus a trimmed one (Graph's `body` and `uniqueBody`). The importer still reads +0x684, the field it read before.
 
 The first real sync after the change imported 266 messages dated 9 October to 3 November 2026 into Archive, Sent Items, Deleted Items and Inbox. `new-outlook doctor` reported `hxstore_layout` ok.
 
@@ -443,17 +452,14 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 - Flags with different start and due dates.
 - Bit 0x02 of 0xc9 +0x5e7, set when a message is first flagged.
 - The byte at 0xc9 +0x5df and the tick values that change when a message is marked read.
-- The second name/address pair at +0x440/+0x448.
-- Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).
+- Folder type 0x62, and where folder nesting is stored.
 - Where the new time of a moved or edited occurrence is kept.
 - The meaning of the last byte of each monthly, weekly and yearly recurrence block (read as first day of week) and of the extra byte in the yearly blocks.
 - My-response code 2 (assumed declined; a declined event leaves the cache, so it cannot be observed) and attendee code 2 (declined, correlated).
 - Whether the 51-byte key equals Graph's ImmutableId.
 - The header fields at 0x10 and 0x68, and the region at 0x3000.
-- The second HTML body at 0xca +0x67c (16.114.3): whether it is the full body, and whether to prefer it.
 - Exactly where inside each range the 16.114.3 bytes were inserted.
 - About 16% of payload bytes lie outside recognised objects.
-- What `hxcore.hfl` holds, and whether recent changes sit there before reaching HxStore.hxd. The importer ignores it.
 
 ## Snapshot pair protocol
 

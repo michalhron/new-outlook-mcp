@@ -30,7 +30,7 @@ Mail that resembles one email or one attachment. Give exactly one of the two ids
 
 `get_email(email_id, offset?, max_chars?, include_headers?)`
 
-One message: metadata, attachment list and the plain-text body. `email_id` is the archive id from a search or an Internet Message-ID. Long bodies are paged with `offset` and `max_chars` (default 8,000). `include_headers` adds the raw headers when they are stored. `is_read`, `flag` (`none`, `flagged`, `complete`), `importance` and `categories` are the state at the last sync, or null when unknown. `flag_due` and `flag_completed` appear when set.
+One message: metadata, attachment list and the plain-text body. `email_id` is the archive id from a search or an Internet Message-ID. Long bodies are paged with `offset` and `max_chars` (default 8,000). `include_headers` adds the raw headers when they are stored. `is_read`, `flag` (`none`, `flagged`, `complete`), `importance` and `categories` are the state at the last sync, or null when unknown. `flag_due` and `flag_completed` appear when set. `sent_by` appears when a list or a delegate sent the message on behalf of `from`.
 
 `get_thread(email_id, max_messages?, body_chars?, subject_fallback?)`
 

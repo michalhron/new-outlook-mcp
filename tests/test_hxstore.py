@@ -643,3 +643,28 @@ def test_event_not_yet_stored_on_the_server_is_skipped(archive, tmp_path):
     assert "events not yet stored on the server skipped (imported on a later sync): 1" in res.message
     evs = caltools.list_calendar_events(archive, "2026-11-16", "2026-11-17", timezone_name="UTC")["events"]
     assert "Just created" not in [e["subject"] for e in evs]
+
+
+def test_full_body_is_used_when_the_unique_part_is_missing(archive, tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p, sizes=hxformat.FS_16_115)
+    F = hxformat.FIELDS[(hxformat.C_BODY, 0x752)]
+    objs.append(ObjSpec(hxformat.C_BODY, 0x5003, fs=0x752,
+                        blobs={F["html_full"]: b"<html><body><p>Full text with history.</p></body></html>"}))
+    b1 = next(o for o in objs if o.cls == hxformat.C_BODY and o.oid == 0x5001)
+    b1.blobs[F["html_full"]] = b"<html><body><p>Agenda attached. Coffee at ten.</p><p>Older quoted mail.</p></body></html>"
+    write_store(p / "HxStore.hxd", objs)
+    run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert tools.get_email(archive, "hx-3@example.com")["body"] == "Full text with history."  # was preview only
+    assert tools.get_email(archive, "hx-1@example.org")["body"] == "Agenda attached. Coffee at ten."  # unique part wins
+
+
+def test_sender_on_behalf_of_from(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    m3 = tools.get_email(archive, "hx-3@example.com")
+    assert m3["from"] == "Jan Synth <jan@example.com>"
+    assert m3["sent_by"] == "Synth List <list-bounces@lists.example.com>"
+    assert "sent_by" not in tools.get_email(archive, "hx-1@example.org")
+    # The well-known folder type next to Sent Items is the Snoozed folder.
+    assert hxformat.WELL_KNOWN_FOLDER[0x66] == "snoozed"

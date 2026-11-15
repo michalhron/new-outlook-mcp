@@ -325,12 +325,16 @@ def _flag_labels(tr: Truth, cls: int, fs: int) -> dict[str, dict[int, bool]]:
     if cls == hx.C_MESSAGE:
         pk = tr.message_pk()
         objs = tr.newest(cls, fs)
-        has = {}
+        has, read = {}, {}
         for mid, p in pk.items():
-            r = tr.row("SELECT has_attachment, first_source FROM messages WHERE id = ?", p)
+            r = tr.row("SELECT has_attachment, first_source, is_read FROM messages WHERE id = ?", p)
             if mid in objs and r and r[1] == "hxstore":
                 has[mid] = bool(r[0])
-        return {"has_attachment_bit": has}
+                if r[2] is not None:
+                    read[mid] = bool(r[2])
+        # Read state changes in Outlook between syncs, so `read_bit` rarely agrees on every message
+        # and is then reported as ambiguous instead of guessed.
+        return {"has_attachment_bit": has, "read_bit": read}
     return {}
 
 
@@ -340,7 +344,10 @@ def _probe_bits(tr: Truth, cls: int, old_fs: int, new_fs: int) -> list[Finding]:
     out = []
     labels_by_bit = _flag_labels(tr, cls, new_fs)
     for name, labels in labels_by_bit.items():
-        old_byte, old_bit = ref["flags"], ref[name]
+        if name not in ref:
+            continue
+        byte_field = hx.BIT_BYTES.get(name, "flags")
+        old_byte, old_bit = ref[byte_field], ref[name]
         scores = []
         for off in _candidates(old_byte, new_fs - old_fs):
             for b in range(8):
@@ -351,7 +358,7 @@ def _probe_bits(tr: Truth, cls: int, old_fs: int, new_fs: int) -> list[Finding]:
         n = len(labels)
         positives = sum(labels.values())
         found = (n >= MIN_EVIDENCE and positives >= 2 and best == n and runner < n)
-        out.append(Finding(cls, f"flags / {name}", old_byte, off if found else None, best, n, runner,
+        out.append(Finding(cls, f"{byte_field} / {name}", old_byte, off if found else None, best, n, runner,
                            "found" if found else "ambiguous" if n else "no evidence",
                            f"bit {old_bit:#04x} -> {bit:#04x}" + ("" if found else f"; {positives} positive examples")))
     # A flag with too few examples of its own may move with a flag that was found: same byte, same bit shift.
@@ -359,6 +366,8 @@ def _probe_bits(tr: Truth, cls: int, old_fs: int, new_fs: int) -> list[Finding]:
     for f in out:
         if f.status != "found" and sure is not None:
             name, sname = f.field.split(" / ")[1], sure.field.split(" / ")[1]
+            if f.field.split(" / ")[0] != sure.field.split(" / ")[0]:
+                continue  # another byte: nothing says it moved the same way
             factor = int(sure.note.split("-> ")[1].split()[0], 16) / ref[sname]
             bit = int(ref[name] * factor)
             labels = labels_by_bit[name]
@@ -471,7 +480,7 @@ def probe_classes(objs, conn: sqlite3.Connection, mismatches: Iterable[tuple[int
         fields = hx.FIELDS[(cls, old_fs)]
         sources = FIELD_SOURCES[cls](tr, new_fs) if cls in FIELD_SOURCES else {}
         for name, old in fields.items():
-            if name in ("flags", "strings") or name.endswith("_bit"):
+            if name in ("flags", "strings") or name.endswith("_bit") or name in hx.BIT_BYTES.values():
                 continue
             if name not in sources:
                 res.findings.append(Finding(cls, name, old, None, 0, 0, 0, "not checked",
@@ -550,9 +559,10 @@ def proposal_python(rep: ProbeReport, build: str) -> str:
                 continue
             if f.status not in ("found", "derived"):
                 continue
-            if f.field.startswith("flags / "):
+            if " / " in f.field:
                 bit = int(f.note.split("-> ")[1].split(",")[0].split()[0], 16)
-                old["flags"], old[f.field.split(" / ")[1]] = f.new, bit
+                byte_field, bit_field = f.field.split(" / ")
+                old[byte_field], old[bit_field] = f.new, bit
             else:
                 old[f.field] = f.new
         body = ", ".join(f'"{k}": {_fmt(v)}' for k, v in old.items())

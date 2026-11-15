@@ -19,7 +19,7 @@ from pathlib import Path
 from .. import mime, orphans
 from ..calendar_store import AttendeeInfo, EventRecord
 from ..ics import find_meeting_url
-from ..model import AttachmentInfo, MessageRecord, first_plausible
+from ..model import AttachmentInfo, MessageRecord, first_plausible, normalize_message_id
 from ..snapshot import SnapshotError
 from . import hxformat
 from .base import Importer
@@ -144,13 +144,20 @@ class HxStoreImporter(Importer):
 
     def iter_records(self, snapshot: Path, *, skip_keys: set[str]) -> Iterator[MessageRecord]:
         store = self._store_for(snapshot)
-        for m in hxformat.iter_messages(store):
+        messages = list(hxformat.iter_messages(store))
+        # One Message-ID can sit in two folders (mail to yourself: Inbox and Sent Items), and the archive
+        # keeps one row for both. The Sent Items copy is always read, so unread wins.
+        unread = {normalize_message_id(m.message_id) for m in messages if m.message_id and not m.is_read}
+        for m in messages:
             self.stats.seen += 1
             if m.key in skip_keys:
                 self.stats.skipped += 1
                 continue
             try:
-                yield self._record(m)
+                rec = self._record(m)
+                if m.message_id and normalize_message_id(m.message_id) in unread:
+                    rec.is_read = False
+                yield rec
             except Exception as exc:
                 self.stats.errors += 1
                 log.warning("hxstore message %s failed: %s", m.local_id, exc)
@@ -183,6 +190,7 @@ class HxStoreImporter(Importer):
             rec.body_text = m.preview
             self.stats.count("messages with preview text only")
         rec.has_attachment = m.has_attachment
+        rec.is_read = m.is_read
         for a in m.attachments:
             path = self.resolve_ref(a.file_ref)
             if path is not None:

@@ -288,3 +288,76 @@ def test_16_115_flag_bits_are_not_read_with_the_old_bit(tmp_path):
     hol = {e.local_id: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}[0x9003]
     assert hol.all_day and not hol.is_cancelled
     assert hxformat.FIELDS[(hxformat.C_EVENT, 0x459)]["all_day_bit"] == 0x10
+
+
+# ------------------------------------------------------------------ read state
+
+def _set_read(objs, oid, read: bool):
+    off = hxformat.FIELDS[(hxformat.C_MESSAGE, 0x60F)]["state"]
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == oid:
+            o.bytes_at[off] = (o.bytes_at[off] & ~0x02) | (0x02 if read else 0)
+
+
+def test_read_state_imported_and_filtered(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    assert tools.get_email(archive, "hx-1@example.org")["is_read"] is False
+    assert tools.get_email(archive, "hx-2@uni.example.edu")["is_read"] is True
+    unread = tools.search_emails(archive, None, unread=True)
+    assert [r["subject"] for r in unread["results"]] == ["Workshop agenda"] and unread["results"][0]["is_read"] is False
+    assert tools.search_emails(archive, None, unread=False)["total"] == 2
+    assert [r["subject"] for r in tools.list_recent(archive, unread=True)["results"]] == ["Workshop agenda"]
+
+
+def test_read_state_follows_the_cache_on_the_next_sync(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    objs = mailbox(profile)
+    _set_read(objs, 0x5001, True)   # opened in Outlook
+    _set_read(objs, 0x5002, False)  # marked unread again
+    write_store(profile / "HxStore.hxd", objs)
+    _sync(archive, profile, tmp_path)
+    assert tools.get_email(archive, "hx-1@example.org")["is_read"] is True
+    assert tools.get_email(archive, "hx-2@uni.example.edu")["is_read"] is False
+    assert tools.search_emails(archive, None, unread=True)["total"] == 1
+
+
+@pytest.mark.parametrize("sent_copy_first", [True, False])
+def test_unread_wins_when_a_message_sits_in_two_folders(archive, tmp_path, sent_copy_first):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    m1 = next(o for o in objs if o.cls == hxformat.C_MESSAGE and o.oid == 0x5001)
+    off = hxformat.FIELDS[(hxformat.C_MESSAGE, 0x60F)]["state"]
+    # Mail to myself: the Sent Items copy has the same Message-ID and is always read.
+    twin = ObjSpec(hxformat.C_MESSAGE, 0x5009, owner=m1.owner, strings=dict(m1.strings), blobs={
+        0x58C: b"\x00\x09\x00\x2e" + (0x5009).to_bytes(8, "little") * 5 + b"\x00\x00\x00"},
+        u64s=dict(m1.u64s), refs={0x382: (hxformat.C_FOLDER, SENT)}, bytes_at={off: 0x02})
+    i = objs.index(m1)
+    objs.insert(i if sent_copy_first else i + 1, twin)
+    write_store(p / "HxStore.hxd", objs)
+    run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert tools.get_email(archive, "hx-1@example.org")["is_read"] is False
+
+
+def test_inbox_marker_bit_is_not_the_read_bit(tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    write_store(p / "HxStore.hxd", mailbox(p))
+    by = {m.local_id: m for m in hxformat.iter_messages(hxformat.Store(p / "HxStore.hxd"))}
+    assert by[0x5001].is_read is False  # state byte 0x80: in the Inbox, unread
+    assert by[0x5003].is_read is True   # state byte 0x82
+
+
+def test_cache_read_state_replaces_the_legacy_one(loaded, tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == 0x5001:
+            o.strings[0x4CC] = "<alpha-1@example.org>"
+    before = tools.get_email(loaded, "alpha-1@example.org")["is_read"]
+    assert before is not None
+    _set_read(objs, 0x5001, not before)
+    write_store(p / "HxStore.hxd", objs)
+    run_import(loaded, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert tools.get_email(loaded, "alpha-1@example.org")["is_read"] is (not before)

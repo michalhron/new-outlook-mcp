@@ -32,7 +32,8 @@ Ground rules for every phase:
 
 ## Phase 2: Decode New Outlook's cache (`HxStore.hxd`)
 - [x] Message records: subject, sender, recipients, dates, folder, account, Message-ID, body
-- [ ] Message flags and read state, Bcc
+- [x] Read state (`is_read`, `unread` filter)
+- [ ] Message flags, importance, categories, Bcc
 - [x] Attachment records → mapping to files in `Main Profile/Files/` (format verified; real files pending an experiment)
 - [x] Orphan files: index attachment files and `EFMData` bodies in `Files/` that no record references, `search_files`, validate counts
 - [ ] Check orphan indexing and body matching on the real `Files/` folder (run `new-outlook validate`)

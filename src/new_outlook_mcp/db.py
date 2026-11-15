@@ -283,6 +283,11 @@ INTERNAL_ACCOUNT = re.compile(r"@omc\.outlook$", re.IGNORECASE)
 PLACEHOLDER_FOLDER = re.compile(r"(^|/)folder-\d+(/|$)")
 
 
+#: Columns that follow a source on every sync instead of keeping the first value seen.
+#: New Outlook's cache is live, so its read state replaces what the frozen legacy archive recorded.
+LIVE_COLUMNS: dict[str, tuple[str, ...]] = {"hxstore": ("is_read",)}
+
+
 def _plausible_bounds() -> tuple[int, int]:
     from .model import EARLIEST_PLAUSIBLE, FUTURE_SLACK
 
@@ -484,7 +489,8 @@ class Archive:
         """Insert a record, or merge it into an existing message with the same dedup key.
 
         Merging only fills fields that are still empty. The first importer to see
-        a message wins for fields it supplied. Call inside `transaction()`.
+        a message wins for fields it supplied. The exception is LIVE_COLUMNS: state that
+        changes in Outlook follows a live source on every sync. Call inside `transaction()`.
         """
         now = _now()
         key = rec.dedup_key()
@@ -552,8 +558,11 @@ class Archive:
             inserted = False
             updates: dict[str, object] = {}
             stale = self._stale_fields(existing)
+            live = LIVE_COLUMNS.get(rec.source, ())
             for col, val in values.items():
-                if (existing[col] in (None, "") or col in stale) and val not in (None, ""):
+                if val in (None, ""):
+                    continue
+                if existing[col] in (None, "") or col in stale or (col in live and existing[col] != val):
                     updates[col] = val
             if "date_ts" in stale and values["date_ts"] is None:
                 updates["date_ts"] = updates["date_utc"] = None  # a sentinel date is worse than none

@@ -20,7 +20,7 @@ These need a server API, which this project does not use:
 
 - Mail that Outlook never cached on this Mac. Searching for it in Outlook makes Outlook download it, and the watcher picks it up within about a minute.
 - Sending mail, accepting or declining invitations, editing or deleting events, other people's free/busy, the room finder and out-of-office settings.
-- Read state, flags and Bcc on New Outlook mail. These are not decoded yet.
+- Flags, importance, categories and Bcc on New Outlook mail. These are not decoded yet.
 
 ## How sources are combined
 
@@ -28,6 +28,7 @@ Every sync copies the source files to a private folder, parses the copy and merg
 
 - Mail is deduplicated by Internet Message-ID. Without one, the key is a hash of sender, date and subject. The same message from the legacy archive and from New Outlook becomes one row.
 - The first source to fill a field keeps it. Later sources fill gaps only. Placeholder values (such as an unnamed account or folder) and implausible dates count as empty, so a better source can replace them.
+- Read state is the exception: it follows New Outlook's cache on every sync, also for a message the legacy archive saw first. The cache is the live state, and the legacy archive is frozen.
 - Calendar events are deduplicated by their iCalendar UID and recurrence id. Here the source with the higher priority wins: New Outlook, then the ICS feed, then the legacy archive.
 - The archive only grows. A message that leaves Outlook's cache stays in the archive. The one exception is `purge-excluded` ([privacy.md](privacy.md)).
 

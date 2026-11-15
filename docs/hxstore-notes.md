@@ -163,6 +163,8 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 | Folder | typed reference at +0x382 (id at +0x38c) to a 0x4d folder | V |
 | Account | object parent (+0x20) is the 0x4a mail account. Its u64 at +0x44 is the 0x49 account, whose +0x156c string is the primary SMTP address. | V |
 | Has attachment | bit 0x40 of byte +0x5e6 | C |
+| Read | bit 0x02 of byte +0x5ea, set when read. See [Read state](#read-state-2026-11-15). | V on 16.115 and 16.114.3; I on 16.113.4 |
+| In the Inbox | bit 0x80 of the same byte. Not imported. | C |
 
 **Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0x19d Reply-To. No Bcc kind was seen. Name at +0x124, address at +0x12c. (C)
 
@@ -204,6 +206,37 @@ After the update to 16.115, four classes grew and the importer stopped with `HxS
 | 0x6b event | cancelled flag | byte +0x43a, bit 0x10 | byte +0x43e, bit 0x20 | Agrees with the archive for 47 of 47, and with a cancellation prefix on the subject for 193 of 194. Only 2 cancelled events. | C |
 
 The event strings the attendee parser steps over moved too (+0x304 → +0x308 or +0x30c, +0x3d4 → +0x3d8); both candidates for the first are listed. With them, attendee counts match the archive for all 47 events. A dry-run decode then matched the archive for every event field on all 47 events, and subjects and accounts for all 728 messages already archived apart from Re:/FW: prefixes and messages moved between folders since.
+
+## Read state (2026-11-15)
+
+Found on Outlook 16.115. The 0xc9 message keeps its read state in **bit 0x02 of byte +0x5ea** (`state` and `read_bit` in `FIELDS`). The bit is set when the message is read.
+
+| Evidence | Result | Kind |
+|---|---|---|
+| Before/after pair: one synthetic message in the Inbox, marked read in Outlook, nothing else touched | Exactly one 0xc9 object changed. Byte +0x5ea went 0x80 → 0x82. | before/after |
+| Second pair: the same message marked unread again | Byte +0x5ea went 0x82 → 0x80, and the next sync set the archive row back to unread. +0x5df stayed 0x02, so that byte is not the read state. | before/after |
+| Unread count | The copy held 4 Inbox messages with the bit clear before and 3 after. Outlook showed 3 unread after. | count |
+| The same message's Sent Items copy | bit set in both copies | before/after |
+| 16.115 copy of 14 November, 789 messages | Sent Items: set in 198 of 198. Of the messages the legacy archive holds as read, 184 of 192 have it set. Of those it holds as unread, 2 of 31. | population |
+| 16.114.3 copy of 3 November, 895 messages | Sent Items: 145 of 145. Legacy read: 427 of 435 set. Legacy unread: 4 of 75 set. Drafts: 0 of 26. | population |
+| 505 messages matched by key between those two copies | The bit changed on 1, from clear to set. | stability |
+| First sync with the decoder | Read state in the archive equals the cache for 758 of 758 messages. | import |
+
+The legacy values are older than the cache, so the few disagreements are messages read or marked unread since. No other bit between +0x5dd and +0x60f separates the two legacy groups. The 0x4f list items carry no bit that mirrors it.
+
+Class 0xc9 has the same size (0x60f) in all three builds, and every other 0xc9 offset is shared. The offset is verified on copies from 16.115 and 16.114.3. No 16.113.4 copy was kept, so for that build it is inferred.
+
+Other bytes that changed in the same object when the message was marked read, not decoded: +0x5df went 0x01 → 0x02 (across the store: 0x00 on 429 messages, 0x02 on 355, 0x01 on 5, all five in the Inbox); several u64 tick values were filled or advanced (+0xa8, +0x170, +0x178, a run of 16 at +0x3b0 to +0x42f, +0x438); +0x594 went 0x86 → 0xa6; a u32 at +0x5c8 was filled. (I)
+
+**Bit 0x80 of +0x5ea (C).** Set on every Inbox message and on no other (46 of 46 and 0 of 743 on 16.115). It was cleared on 44 messages that left the Inbox between the two copies. The importer does not read it: the folder reference says the same.
+
+What the importer does:
+
+- `messages.is_read` follows the cache on every sync. For this one column the New Outlook cache replaces the value the frozen legacy archive recorded, because the cache is the newer state.
+- A message that sits in two folders with one Message-ID (mail to yourself: Inbox and Sent Items) is one row in the archive. It counts as unread while any copy is unread, since the Sent Items copy is always read.
+- Drafts mostly have the bit clear, as they do in the legacy archive, so an `unread` search also returns drafts.
+- A message that left the cache keeps the last state the archive saw.
+- `layout-probe` checks `read_bit` against the archive when class 0xc9 changes size. Read state changes between syncs, so it will usually report the bit as ambiguous instead of proposing an offset.
 
 ## Attachments (class 0x16a)
 
@@ -266,7 +299,8 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 
 ## Open questions
 
-- Read/unread, flag, importance and categories: not located.
+- Flag, importance and categories: not located. Read state is decoded (see above).
+- The byte at 0xc9 +0x5df and the tick values that change when a message is marked read.
 - Bcc on sent mail: no recipient kind seen.
 - The second name/address pair at +0x440/+0x448.
 - Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).

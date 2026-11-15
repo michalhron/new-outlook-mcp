@@ -1,6 +1,6 @@
 """Decoder for New Outlook's HxStore.hxd ("Nostromo" container, version 'i').
 
-Measured on New Outlook for Mac 16.113.4 and 16.114.3. See docs/hxstore-notes.md for the
+Measured on New Outlook for Mac 16.113.4, 16.114.3 and 16.115. See docs/hxstore-notes.md for the
 full description, confidence levels and open questions. Stdlib only.
 
 Container: 4 KiB file header, then blocks on 512-byte boundaries. A block is a
@@ -66,7 +66,9 @@ EXPECTED_FS = {c: tuple(sorted({b[c] for b in BUILDS.values()})) for c in FS_16_
 _MESSAGE = {"key": 0x58C, "subject": 0x598, "topic": 0x4EC, "from_name": 0x56C, "from_addr": 0x574,
             "message_id": 0x4CC, "in_reply_to": 0x4BC, "message_class": 0x4D4, "preview": 0x518,
             "sent": 0x2D8, "received": 0x120, "modified": 0x178, "folder_ref": 0x382, "flags": 0x5E6,
-            "has_attachment_bit": 0x40}
+            "has_attachment_bit": 0x40, "state": 0x5EA, "read_bit": 0x02}
+#: Flag bits that are not in the "flags" byte: bit field -> the field that holds its byte.
+BIT_BYTES = {"read_bit": "state"}
 _RECIPIENT = {"name": 0x124, "addr": 0x12C}
 _ATTACHMENT = {"message_ref": 0x1A2, "name": 0x260, "size": 0x238, "content_type": 0x250, "content_id": 0x240,
                "inline": 0x2B0, "file_ref": 0x288, "download_state": 0x270}
@@ -446,6 +448,7 @@ class HxMessage:
     body_html: str | None
     body_file_ref: str | None  # "~/Files/S0/<n>/EFMData/<k>.dat" (gzip HTML)
     has_attachment: bool
+    is_read: bool
     attachments: list[HxAttachment]
 
 
@@ -526,6 +529,7 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
             body_html=body_html,
             body_file_ref=body_file,
             has_attachment=bool(ob.raw[ob.at("flags")] & ob.at("has_attachment_bit")),
+            is_read=bool(ob.raw[ob.at("state")] & ob.at("read_bit")),
             attachments=atts.get(mid, []),
         )
 

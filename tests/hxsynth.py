@@ -134,7 +134,8 @@ ME = "me@uni.example.edu"
 
 
 def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = hx.FS_16_114) -> list[ObjSpec]:
-    """Three messages, two attachments, three events. Files/ entries are created when with_files.
+    """Three messages (m1 unread, the others read), two attachments, three events. Files/ entries are
+    created when with_files.
 
     `sizes` picks the Outlook build's layout (hx.FS_16_113, hx.FS_16_114 or hx.FS_16_115).
     """
@@ -156,13 +157,17 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
 
         (e / "7.dat").write_bytes(gzip.compress(b"<html><body><p>A very long synthetic report.</p></body></html>"))
 
-    def msg(oid, *, subject, frm, mid, sent, received, folder, irt=None, preview="", has_att=False, stamp=1):
+    def msg(oid, *, subject, frm, mid, sent, received, folder, irt=None, preview="", has_att=False, stamp=1,
+            read=True):
         o = ObjSpec(hx.C_MESSAGE, oid, owner=MAIL_ACCOUNT, stamp=stamp,
                     strings={0x598: subject, 0x56C: frm[0], 0x574: frm[1], 0x4CC: mid, 0x4D4: "IPM.Note",
                              0x518: preview},
                     u64s={0x2D8: ticks(sent), 0x120: ticks(received)},
                     refs={0x382: (hx.C_FOLDER, folder)},
-                    bytes_at={0x5E6: 0x40 if has_att else 0})
+                    bytes_at={0x5E6: 0x40 if has_att else 0,
+                              # 0x80 marks an Inbox message on real stores; it must not be taken for the read bit.
+                              at(hx.C_MESSAGE, "state"): (at(hx.C_MESSAGE, "read_bit") if read else 0)
+                              | (0x80 if folder == INBOX else 0)})
         if irt:
             o.strings[0x4BC] = irt
         # 51-byte stable id blob (real ones start 00 09 00 2e)
@@ -182,7 +187,7 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         # m1: inbox message with a cached PDF, an inline logo, and a missing attachment.
         msg(0x5001, subject="Workshop agenda", frm=("Hana Synth", "hana@example.org"), mid="<hx-1@example.org>",
             sent=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc),
-            received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True),
+            received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True, read=False),
         ObjSpec(hx.C_BODY, 0x5001, fs=body_fs,
                 blobs={at(hx.C_BODY, "html"): b"<html><body><p>Agenda attached. Coffee at ten.</p></body></html>"}),
         rcpt(0x6001, 0x5001, 0xCC, "Me", ME),

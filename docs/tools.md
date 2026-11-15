@@ -6,13 +6,16 @@ Contents: [Mail](#mail) · [Attachments and files](#attachments-and-files) · [C
 
 ## Mail
 
-`search_emails(query?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, attachment_name?, unread?, sort?, limit?, offset?, mode?)`
+`search_emails(query?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, attachment_name?, unread?, flagged?, importance?, category?, sort?, limit?, offset?, mode?)`
 
 Search mail and filter it. Without `query` it lists the mail that matches the filters.
 
 - `sender`, `recipient` (To, Cc or Bcc), `folder`, `account`, `attachment_name`: the field contains this text.
 - `date_from`, `date_to`: `YYYY-MM-DD` or ISO 8601, in UTC. `date_to` is inclusive.
 - `unread`: `true` for unread mail only, `false` for read mail only. Read state is the state at the last sync. Messages whose state is unknown match neither. Results carry `is_read` when it is known.
+- `flagged`: `true` for mail with an open follow-up flag, `false` for mail without one. A completed flag counts as not flagged.
+- `importance`: `low`, `normal` or `high`. `category`: a category name contains this text.
+- Flag, importance and categories are known for mail seen in New Outlook's cache. Mail from the legacy archive only matches none of these filters. Results carry `flag`, `importance` and `categories` only when they stand out (flagged or complete, low or high, at least one category).
 - `sort`: `relevance` (default), `date_desc` or `date_asc`.
 - `limit` 1 to 200 (default 20), `offset` for paging. The result has `next_offset` when there is more.
 - `mode`: `keyword` (default), `semantic` or `hybrid`. The last two need [search by meaning](semantic-search.md).
@@ -27,13 +30,13 @@ Mail that resembles one email or one attachment. Give exactly one of the two ids
 
 `get_email(email_id, offset?, max_chars?, include_headers?)`
 
-One message: metadata, attachment list and the plain-text body. `email_id` is the archive id from a search or an Internet Message-ID. Long bodies are paged with `offset` and `max_chars` (default 8,000). `include_headers` adds the raw headers when they are stored. `is_read` is the read state at the last sync, or null when unknown.
+One message: metadata, attachment list and the plain-text body. `email_id` is the archive id from a search or an Internet Message-ID. Long bodies are paged with `offset` and `max_chars` (default 8,000). `include_headers` adds the raw headers when they are stored. `is_read`, `flag` (`none`, `flagged`, `complete`), `importance` and `categories` are the state at the last sync, or null when unknown. `flag_due` and `flag_completed` appear when set.
 
 `get_thread(email_id, max_messages?, body_chars?, subject_fallback?)`
 
 The conversation around a message, oldest first, with `body_chars` (default 1,500) of each body. Threads come from conversation ids and reply headers. With `subject_fallback` (default on), messages with the same normalized subject join when those are missing.
 
-`list_recent(limit?, folder?, account?, days?, unread?)`
+`list_recent(limit?, folder?, account?, days?, unread?, flagged?)`
 
 The newest messages, optionally within a folder, an account or the last N days.
 

@@ -165,6 +165,10 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 | Has attachment | bit 0x40 of byte +0x5e6 | C |
 | Read | bit 0x02 of byte +0x5ea, set when read. See [Read state](#read-state-2026-11-15). | V on 16.115 and 16.114.3; I on 16.113.4 |
 | In the Inbox | bit 0x80 of the same byte. Not imported. | C |
+| Importance | u32 at +0x4b8: 0 low, 1 normal, 2 high | V |
+| Flag status | byte +0x5cc: 0 none, 1 complete, 2 flagged | V |
+| Flag dates | u64 ticks: completed +0x128, start +0x130, due +0x138 | C |
+| Categories | descriptor +0x484: u32 count, then per name u8 byte length and UTF-16LE text | C (one name seen) |
 
 **Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0x19d Reply-To. No Bcc kind was seen. Name at +0x124, address at +0x12c. (C)
 
@@ -238,9 +242,47 @@ What the importer does:
 - A message that left the cache keeps the last state the archive saw.
 - `layout-probe` checks `read_bit` against the archive when class 0xc9 changes size. Read state changes between syncs, so it will usually report the bit as ambiguous instead of proposing an offset.
 
+## Flag, importance and categories (2026-11-15)
+
+Found on Outlook 16.115 with three synthetic messages: one sent with high importance, one with low, one with normal. All fields are in the 0xc9 message. See [Read state](#read-state-2026-11-15) for why the offsets carry over to the other builds: verified on a 16.114.3 copy where a population exists, inferred on 16.113.4.
+
+**Importance (V).** u32 at +0x4b8: 0 low, 1 normal, 2 high, the codes Exchange uses.
+
+- All six copies of the three messages agree (Inbox and Sent Items copy of each): 2, 0 and 1.
+- The byte is the only one in the fixed region that differs between all three messages and has few values across the store.
+- 16.115 copy, 760 messages: 752 normal, 6 high, 2 low. 16.114.3 copy, 895 messages: 885 normal, 10 high. No other value.
+
+**Flag status (V).** One byte at +0x5cc: 0 not flagged, 2 flagged, 1 complete. The three bytes after it belong to another field (constant on 733 of 760 messages), so it is read as a byte, not a u32.
+
+| Action on one message, one before/after pair each | +0x5cc | +0x128 | +0x130 | +0x138 |
+|---|---|---|---|---|
+| never flagged | 0 | unset | unset | unset |
+| flagged | 2 | unset | that day, 00:00 UTC | that day, 00:00 UTC |
+| marked complete | 1 | that day, 00:00 UTC | unset | unset |
+| flag cleared | 0 | unset | unset | unset |
+
+In each pair only this one message object changed in these fields. No other message in the 16.115 or 16.114.3 copies was ever flagged (byte 0 and all three dates unset on every one), which fits a mailbox where flags are not used but gives no second example.
+
+**Flag dates (C).** +0x128 is the completion date. +0x130 and +0x138 are start and due date; a plain flag sets both to the same day, so which is which rests on the Exchange order (start before due), not on a test with different dates. The importer stores due and completion and ignores start. "Unset" is DateTime.MaxValue.
+
+Bit 0x02 of +0x5e7 was set by the first flagging and stayed set through complete and clear. Not decoded. (I)
+
+**Categories (C).** The descriptor at +0x484 points to a list in the string area: u32 count, then per category a u8 byte length and the name in UTF-16LE without NUL. This is the shape of the attendee list in events.
+
+- Assigning one category to one message created the list on that message and on its Sent Items twin: count 1 and the name Outlook shows. Nothing else in the fixed region of the object changed apart from change stamps.
+- No other message in three copies has a list there, so the count and a list of several names rest on one example and on the attendee list's shape. The parser accepts only bytes that fit the shape exactly. Otherwise it imports no list, counts the message in the sync notes, and keeps what the archive had.
+- The two 0x4f list items of the message also carry the name. Not read.
+
+What the importer does:
+
+- `importance`, `flag_status`, `flag_due`, `flag_completed` and `categories_json` are new columns of `messages`. NULL means the source does not say (legacy mail). An importance or flag code outside the tables above is imported as unknown and counted in the sync notes.
+- Flag status, flag dates and categories are live columns: they follow the cache on every sync, and a cleared due or completion date is cleared in the archive. Importance cannot change after sending and only fills gaps.
+- For one Message-ID in two folders, flag and categories come from the received copy, like the folder.
+- `layout-probe` has a check for each of these fields. Nearly all mail is normal, unflagged and uncategorised, so after a change of class 0xc9 they will mostly be placed by their neighbours or by hand.
+
 ## Live state in the archive (2026-11-15)
 
-Not a format finding, but a rule of the importer that rests on one. Read state and folder change in Outlook after a message was first imported, so for the `hxstore` source they are written on every sync (`LIVE_COLUMNS` in `db.py`). All other fields still keep the first value and only fill gaps.
+Not a format finding, but a rule of the importer that rests on one. Read state, folder, flag and categories change in Outlook after a message was first imported, so for the `hxstore` source they are written on every sync (`LIVE_COLUMNS` in `db.py`). All other fields still keep the first value and only fill gaps.
 
 - **Which source wins.** The cache wins over the legacy archive for these two columns. The legacy archive is a frozen copy of old Outlook, so where the two disagree the cache is the later state. The legacy importer is not a live source and never overwrites them, whatever the import order.
 - **Account.** The account of a message does not change and stays as first imported. The new folder is looked up by name under that account, so a folder row never belongs to another account than its message.
@@ -310,7 +352,8 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 
 ## Open questions
 
-- Flag, importance and categories: not located. Read state is decoded (see above).
+- Categories with more than one name on a message, and flags with different start and due dates.
+- Bit 0x02 of 0xc9 +0x5e7, set when a message is first flagged.
 - The byte at 0xc9 +0x5df and the tick values that change when a message is marked read.
 - Bcc on sent mail: no recipient kind seen.
 - The second name/address pair at +0x440/+0x448.

@@ -162,8 +162,8 @@ def _ref(cls: int) -> Check:
 def _pairs_message(tr: Truth, fs: int):
     rows = {}
     for mid, pk in tr.message_pk().items():
-        r = tr.row("SELECT subject, from_name, from_addr, message_id, date_ts, has_attachment, body_text, first_source"
-                   " FROM messages"
+        r = tr.row("SELECT subject, from_name, from_addr, message_id, date_ts, has_attachment, body_text, first_source,"
+                   " importance, flag_status, categories_json FROM messages"
                    " WHERE id = ?", pk)
         if r is not None:
             rows[mid] = r
@@ -194,7 +194,30 @@ def _message_fields(tr: Truth, fs: int):
         "sent": ([(o, r["date_ts"]) for o, r in hx_only if r["date_ts"]],
                  lambda o, off, t: abs(_ticks(o.u64(off)) - t) < 86400),
         "modified": ([(o, None) for o, _ in pairs], lambda o, off, t: 9.4e8 < _ticks(o.u64(off)) < 4.1e9),
+        # Most mail has normal importance, no flag and no category, so these usually come out
+        # ambiguous and are then placed by their neighbours or by hand.
+        "importance": ([(o, r["importance"]) for o, r in pairs if r["importance"]],
+                       lambda o, off, t: hx.IMPORTANCE.get(o.u32(off)) == t),
+        "flag_status": ([(o, r["flag_status"]) for o, r in pairs if r["flag_status"]],
+                        lambda o, off, t: hx.FLAG_STATUS.get(o.raw[off]) == t),
+        "categories": ([(o, json.loads(r["categories_json"])) for o, r in pairs if r["categories_json"]],
+                       lambda o, off, t: _categories_at(o, off) == t),
+        **{name: ([(o, None) for o, _ in pairs], _unset_or_date)
+           for name in ("flag_completed", "flag_start", "flag_due")},
     }
+
+
+def _unset_or_date(o, off, _t) -> bool:
+    v = o.u64(off)
+    return v == hx.TICKS_MAX or 9.4e8 < _ticks(v) < 4.1e9
+
+
+def _categories_at(o, off):
+    """The category list as the decoder would read it if the field sat at `off`."""
+    b = o.blob(off)
+    if not b:
+        return []
+    return hx.parse_counted_strings(b)
 
 
 def _account_fields(tr: Truth, fs: int):

@@ -66,7 +66,9 @@ EXPECTED_FS = {c: tuple(sorted({b[c] for b in BUILDS.values()})) for c in FS_16_
 _MESSAGE = {"key": 0x58C, "subject": 0x598, "topic": 0x4EC, "from_name": 0x56C, "from_addr": 0x574,
             "message_id": 0x4CC, "in_reply_to": 0x4BC, "message_class": 0x4D4, "preview": 0x518,
             "sent": 0x2D8, "received": 0x120, "modified": 0x178, "folder_ref": 0x382, "flags": 0x5E6,
-            "has_attachment_bit": 0x40, "state": 0x5EA, "read_bit": 0x02}
+            "has_attachment_bit": 0x40, "state": 0x5EA, "read_bit": 0x02, "importance": 0x4B8,
+            "flag_status": 0x5CC, "flag_completed": 0x128, "flag_start": 0x130, "flag_due": 0x138,
+            "categories": 0x484}
 #: Flag bits that are not in the "flags" byte: bit field -> the field that holds its byte.
 BIT_BYTES = {"read_bit": "state"}
 _RECIPIENT = {"name": 0x124, "addr": 0x12C}
@@ -102,6 +104,8 @@ for _cls, _fields in ((C_MESSAGE, _MESSAGE), (C_RECIPIENT, _RECIPIENT), (C_ATTAC
         FIELDS.setdefault((_cls, _fs), _fields)
 
 RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0x19D: "reply_to"}
+IMPORTANCE = {0: "low", 1: "normal", 2: "high"}
+FLAG_STATUS = {0: "none", 1: "complete", 2: "flagged"}
 WELL_KNOWN_FOLDER = {0x61: "inbox", 0x63: "archive", 0x64: "drafts", 0x65: "sentitems", 0x67: "deleteditems"}
 MY_RESPONSE = {0: "accepted", 1: "tentative", 2: "declined", 3: "organizer", 4: "none"}
 ATTENDEE_RESPONSE = {0: "accepted", 1: "tentative", 2: "declined", 4: "none"}
@@ -449,6 +453,12 @@ class HxMessage:
     body_file_ref: str | None  # "~/Files/S0/<n>/EFMData/<k>.dat" (gzip HTML)
     has_attachment: bool
     is_read: bool
+    importance: str | None  # "low", "normal", "high"; None for a code not seen so far
+    flag_status: str | None  # "none", "flagged", "complete"; None for a code not seen so far
+    flag_start: datetime | None
+    flag_due: datetime | None
+    flag_completed: datetime | None
+    categories: list[str] | None  # None when the list could not be parsed
     attachments: list[HxAttachment]
 
 
@@ -465,6 +475,35 @@ def _folders(store: Store) -> dict[int, tuple[str | None, str | None]]:
         ob = store.latest(c)
         out[i] = (store.first(c, lambda o: o.text(o.at("name"))), WELL_KNOWN_FOLDER.get(ob.u32(ob.at("type"))))
     return out
+
+
+def parse_counted_strings(b: bytes) -> list[str] | None:
+    """u32 count, then per string u8 byte length and UTF-16LE text (no NUL).
+
+    None when the bytes do not fit this shape exactly.
+    """
+    if len(b) < 4:
+        return None
+    n, = struct.unpack_from("<I", b, 0)
+    if n > 100:
+        return None
+    pos, out = 4, []
+    for _ in range(n):
+        if pos >= len(b):
+            return None
+        ln = b[pos]
+        pos += 1
+        if ln % 2 or pos + ln > len(b):
+            return None
+        out.append(b[pos:pos + ln].decode("utf-16-le", "replace"))
+        pos += ln
+    return out if pos == len(b) else None
+
+
+def _categories(ob: Obj) -> list[str] | None:
+    """Category names of a message: [] without a list, None when the list cannot be parsed."""
+    b = ob.blob(ob.at("categories"))
+    return parse_counted_strings(b) if b else []
 
 
 def iter_messages(store: Store) -> Iterator[HxMessage]:
@@ -530,6 +569,12 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
             body_file_ref=body_file,
             has_attachment=bool(ob.raw[ob.at("flags")] & ob.at("has_attachment_bit")),
             is_read=bool(ob.raw[ob.at("state")] & ob.at("read_bit")),
+            importance=IMPORTANCE.get(ob.u32(ob.at("importance"))),
+            flag_status=FLAG_STATUS.get(ob.raw[ob.at("flag_status")]),
+            flag_start=ticks(ob.u64(ob.at("flag_start"))),
+            flag_due=ticks(ob.u64(ob.at("flag_due"))),
+            flag_completed=ticks(ob.u64(ob.at("flag_completed"))),
+            categories=_categories(ob),
             attachments=atts.get(mid, []),
         )
 

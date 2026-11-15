@@ -25,6 +25,15 @@ def u16z(s: str) -> bytes:
     return s.encode("utf-16-le") + b"\0\0"
 
 
+def counted_strings(items) -> bytes:
+    """u32 count, then per string u8 byte length and UTF-16LE text (category lists)."""
+    out = struct.pack("<I", len(items))
+    for s in items:
+        b = s.encode("utf-16-le")
+        out += bytes([len(b)]) + b
+    return out
+
+
 def lz4_literals(data: bytes) -> bytes:
     """A valid LZ4 block made of one literal run (no compression)."""
     n = len(data)
@@ -134,8 +143,8 @@ ME = "me@uni.example.edu"
 
 
 def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = hx.FS_16_114) -> list[ObjSpec]:
-    """Three messages (m1 unread, the others read), two attachments, three events. Files/ entries are
-    created when with_files.
+    """Three messages (m1 unread, flagged, high importance, two categories; the others read and plain),
+    two attachments, three events. Files/ entries are created when with_files.
 
     `sizes` picks the Outlook build's layout (hx.FS_16_113, hx.FS_16_114 or hx.FS_16_115).
     """
@@ -158,7 +167,7 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         (e / "7.dat").write_bytes(gzip.compress(b"<html><body><p>A very long synthetic report.</p></body></html>"))
 
     def msg(oid, *, subject, frm, mid, sent, received, folder, irt=None, preview="", has_att=False, stamp=1,
-            read=True):
+            read=True, importance=1, flag=0, flag_due=None, categories=()):
         o = ObjSpec(hx.C_MESSAGE, oid, owner=MAIL_ACCOUNT, stamp=stamp,
                     strings={0x598: subject, 0x56C: frm[0], 0x574: frm[1], 0x4CC: mid, 0x4D4: "IPM.Note",
                              0x518: preview},
@@ -170,6 +179,14 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
                               | (0x80 if folder == INBOX else 0)})
         if irt:
             o.strings[0x4BC] = irt
+        m = lambda field: at(hx.C_MESSAGE, field)  # noqa: E731
+        o.u32s[m("importance")] = importance
+        o.bytes_at[m("flag_status")] = flag
+        # Unset dates hold DateTime.MaxValue, as on real stores.
+        o.u64s.update({m("flag_completed"): hx.TICKS_MAX, m("flag_start"): hx.TICKS_MAX,
+                       m("flag_due"): ticks(flag_due) if flag_due else hx.TICKS_MAX})
+        if categories:
+            o.blobs[m("categories")] = counted_strings(categories)
         # 51-byte stable id blob (real ones start 00 09 00 2e)
         o.blobs[0x58C] = b"\x00\x09\x00\x2e" + oid.to_bytes(8, "little") * 5 + b"\x00\x00\x00"
         return o
@@ -187,7 +204,9 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         # m1: inbox message with a cached PDF, an inline logo, and a missing attachment.
         msg(0x5001, subject="Workshop agenda", frm=("Hana Synth", "hana@example.org"), mid="<hx-1@example.org>",
             sent=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc),
-            received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True, read=False),
+            received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True, read=False,
+            importance=2, flag=2, flag_due=datetime(2026, 9, 4, tzinfo=timezone.utc),
+            categories=("Blue category", "Teaching")),
         ObjSpec(hx.C_BODY, 0x5001, fs=body_fs,
                 blobs={at(hx.C_BODY, "html"): b"<html><body><p>Agenda attached. Coffee at ten.</p></body></html>"}),
         rcpt(0x6001, 0x5001, 0xCC, "Me", ME),

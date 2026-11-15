@@ -87,6 +87,11 @@ class MessageRecord:
     raw_source_path: str | None = None
     raw_source: bytes | None = None
     is_read: bool | None = None
+    importance: str | None = None  # "low", "normal", "high"
+    flag_status: str | None = None  # "none", "flagged", "complete"
+    flag_due: datetime | None = None
+    flag_completed: datetime | None = None
+    categories: list[str] | None = None  # None: unknown; []: none
     size: int | None = None
     #: Explicit flag from the source, for when attachment details are unknown.
     has_attachment: bool | None = None

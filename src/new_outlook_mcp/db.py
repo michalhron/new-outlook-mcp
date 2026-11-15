@@ -62,7 +62,13 @@ CREATE TABLE IF NOT EXISTS messages (
     raw_source_z BLOB,
     first_source TEXT NOT NULL,
     imported_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- NULL in the next four means "not known" (the source does not say).
+    importance TEXT,        -- low, normal, high
+    flag_status TEXT,       -- none, flagged, complete
+    flag_due TEXT,          -- ISO 8601 UTC
+    flag_completed TEXT,    -- ISO 8601 UTC
+    categories_json TEXT    -- JSON list of category names
 );
 CREATE INDEX IF NOT EXISTS idx_messages_date ON messages(date_ts);
 CREATE INDEX IF NOT EXISTS idx_messages_msgid ON messages(message_id);
@@ -286,7 +292,11 @@ PLACEHOLDER_FOLDER = re.compile(r"(^|/)folder-\d+(/|$)")
 #: Columns that follow a source on every sync instead of keeping the first value seen.
 #: New Outlook's cache is the live mailbox, so its read state and folder replace what an earlier
 #: sync or the frozen legacy archive recorded. A source that is not listed only fills gaps.
-LIVE_COLUMNS: dict[str, tuple[str, ...]] = {"hxstore": ("is_read", "folder_id")}
+LIVE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "hxstore": ("is_read", "folder_id", "flag_status", "flag_due", "flag_completed", "categories_json")}
+#: Live columns that a live source may also empty again (a cleared due date). The others are only
+#: written when the source has a value: an unresolved folder must not erase the known one.
+LIVE_CLEARABLE = ("flag_due", "flag_completed")
 
 
 def _plausible_bounds() -> tuple[int, int]:
@@ -527,6 +537,11 @@ class Archive:
             "body_text": rec.body_text,
             "body_html": rec.body_html,
             "is_read": None if rec.is_read is None else int(rec.is_read),
+            "importance": rec.importance,
+            "flag_status": rec.flag_status,
+            "flag_due": rec.flag_due.astimezone(timezone.utc).isoformat() if rec.flag_due else None,
+            "flag_completed": rec.flag_completed.astimezone(timezone.utc).isoformat() if rec.flag_completed else None,
+            "categories_json": None if rec.categories is None else json.dumps(rec.categories, ensure_ascii=False),
             "size": rec.size,
             "raw_source_path": rec.raw_source_path,
             "raw_source_z": raw_z,
@@ -563,6 +578,9 @@ class Archive:
             live = LIVE_COLUMNS.get(rec.source, ())
             for col, val in values.items():
                 if val in (None, ""):
+                    # Only once the source has reported the flag at all: an unknown flag clears nothing.
+                    if col in live and col in LIVE_CLEARABLE and existing[col] is not None and rec.flag_status:
+                        updates[col] = None
                     continue
                 if existing[col] in (None, "") or col in stale or (col in live and existing[col] != val):
                     updates[col] = val

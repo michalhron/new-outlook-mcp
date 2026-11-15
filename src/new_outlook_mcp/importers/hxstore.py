@@ -156,7 +156,7 @@ class HxStoreImporter(Importer):
         # One Message-ID can sit in two folders (mail to yourself: Inbox and Sent Items), and the archive
         # keeps one row for both. Every copy then reports the same live state, so the row does not
         # depend on the order of the copies: unread while any copy is unread (the Sent Items copy is
-        # always read), and the folder of the received copy.
+        # always read), and the folder, flag and categories of the received copy.
         unread: set[str] = set()
         home: dict[str, hxformat.HxMessage] = {}
         for m in messages:
@@ -178,8 +178,11 @@ class HxStoreImporter(Importer):
                     mid = normalize_message_id(m.message_id)
                     if mid in unread:
                         rec.is_read = False
-                    if home[mid].account == m.account:
-                        rec.folder = home[mid].folder or home[mid].folder_type
+                    h = home[mid]
+                    if h is not m and h.account == m.account:
+                        rec.folder = h.folder or h.folder_type
+                        rec.flag_status, rec.flag_due, rec.flag_completed = h.flag_status, h.flag_due, h.flag_completed
+                        rec.categories = h.categories
                 yield rec
             except Exception as exc:
                 self.stats.errors += 1
@@ -214,6 +217,13 @@ class HxStoreImporter(Importer):
             self.stats.count("messages with preview text only")
         rec.has_attachment = m.has_attachment
         rec.is_read = m.is_read
+        rec.importance = m.importance
+        rec.flag_status, rec.flag_due, rec.flag_completed = m.flag_status, m.flag_due, m.flag_completed
+        rec.categories = m.categories
+        if m.categories is None:
+            self.stats.count("messages with an unreadable category list")
+        if m.importance is None or m.flag_status is None:
+            self.stats.count("messages with an unknown importance or flag code")
         for a in m.attachments:
             path = self.resolve_ref(a.file_ref)
             if path is not None:

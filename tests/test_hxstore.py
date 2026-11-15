@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from hxsynth import ME, SENT, ObjSpec, mailbox, write_store
+from hxsynth import ME, SENT, ObjSpec, mailbox, recurrence, write_store
 
 from new_outlook_mcp import caltools, tools
 from new_outlook_mcp.importers import hxformat
@@ -555,3 +555,91 @@ def test_bcc_survives_the_merge_with_the_received_copy(archive, tmp_path, sent_c
     run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
     got = tools.get_email(archive, "hx-2@uni.example.edu")
     assert got["bcc"] == ["Olga Synth <olga@example.net>"] and got["folder"] == "Inbox"
+
+
+# -------------------------------------------------------------- recurrence
+
+def _utc(*a):
+    from datetime import datetime, timezone
+    return datetime(*a, tzinfo=timezone.utc)
+
+
+S = _utc(2026, 11, 16, 10)  # a Monday
+PATTERNS = [
+    (dict(kind="daily", interval=2, until=_utc(2026, 12, 7)), "FREQ=DAILY;INTERVAL=2;UNTIL=20261207"),
+    (dict(kind="daily", count=5), "FREQ=DAILY;INTERVAL=1;COUNT=5"),
+    (dict(kind="weekly", days=["MO", "WE", "FR"]), "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE,FR;WKST=MO"),
+    (dict(kind="weekly", interval=2, days=["SA", "SU"], until=_utc(2027, 1, 31)),
+     "FREQ=WEEKLY;INTERVAL=2;BYDAY=SA,SU;WKST=MO;UNTIL=20270131"),
+    (dict(kind="monthly", interval=3, day=28), "FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=28"),
+    (dict(kind="monthly_rel", days=["TU"], index=1), "FREQ=MONTHLY;INTERVAL=1;BYDAY=2TU"),
+    (dict(kind="monthly_rel", interval=2, days=["MO"], index=0), "FREQ=MONTHLY;INTERVAL=2;BYDAY=1MO"),
+    (dict(kind="monthly_rel", days=["FR"], index=4, count=4), "FREQ=MONTHLY;INTERVAL=1;BYDAY=-1FR;COUNT=4"),
+    (dict(kind="monthly_rel", days=["MO", "TU", "WE", "TH", "FR"], index=4),
+     "FREQ=MONTHLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"),
+    (dict(kind="yearly", month=11, day=20), "FREQ=YEARLY;INTERVAL=1;BYMONTH=11;BYMONTHDAY=20"),
+    (dict(kind="yearly", interval=2, month=6, day=5), "FREQ=YEARLY;INTERVAL=2;BYMONTH=6;BYMONTHDAY=5"),
+    (dict(kind="yearly_rel", month=3, days=["TH"], index=2), "FREQ=YEARLY;INTERVAL=1;BYMONTH=3;BYDAY=3TH"),
+]
+
+
+def _series_store(tmp_path, sizes, make):
+    p = tmp_path / "Main Profile"
+    p.mkdir(exist_ok=True)
+    write_store(p / "HxStore.hxd", mailbox(p, sizes=sizes, extra_events=make))
+    return p
+
+
+@pytest.mark.parametrize("sizes", [hxformat.FS_16_114, hxformat.FS_16_115], ids=["16.114.3", "16.115"])
+def test_every_recurrence_pattern_becomes_its_rrule(tmp_path, sizes):
+    def make(event):
+        return [event(0xA000 + i, uid=f"040000008200E00074C5B7101A82E0080000000{i:04d}", subject=f"Series {i}",
+                      start=S, end=_utc(2026, 11, 16, 11), etype=3, rec=recurrence(start=S, **spec))
+                for i, (spec, _) in enumerate(PATTERNS)]
+
+    p = _series_store(tmp_path, sizes, make)
+    got = {e.subject: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}
+    for i, (_, rule) in enumerate(PATTERNS):
+        assert got[f"Series {i}"].rrule == rule and not got[f"Series {i}"].recurrence_unparsed
+
+
+def test_deleted_occurrence_is_left_out_and_a_moved_one_is_reported(archive, tmp_path):
+    def make(event):
+        return [event(0xA100, uid="040000008200E00074C5B7101A82E0080000000A100", subject="Three a week", start=S,
+                      end=_utc(2026, 11, 16, 11), etype=3, tz="UTC",
+                      rec=recurrence("weekly", days=["MO", "WE", "FR"], start=S, count=6),
+                      deleted=[_utc(2026, 11, 18, 10)], changed=[_utc(2026, 11, 20, 10)])]
+
+    p = _series_store(tmp_path, hxformat.FS_16_115, make)
+    res = run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert "moved or edited occurrences shown at their original time: 1" in res.message
+    evs = caltools.list_calendar_events(archive, "2026-11-16", "2026-11-30", timezone_name="UTC")["events"]
+    days = [e["start"][:10] for e in evs if e["subject"] == "Three a week"]
+    assert days == ["2026-11-16", "2026-11-20", "2026-11-23", "2026-11-25", "2026-11-27"]  # no 18th; 6 minus 1
+
+
+def test_recurrence_that_does_not_fit_is_not_guessed(tmp_path):
+    def make(event):
+        good = recurrence("weekly", days=["MO"], start=S)
+        cut = dict(good, blocks={k: (v[:-1] if k == "rec_weekly" else v) for k, v in good["blocks"].items()})
+        unknown_type = dict(good, type=7)
+        wrong_block = dict(recurrence("monthly", day=15, start=S), type=2)  # type says weekly, block is monthly
+        return [event(0xA200 + i, uid=f"040000008200E00074C5B7101A82E008000000A20{i}", subject=f"Odd {i}", start=S,
+                      end=_utc(2026, 11, 16, 11), etype=3, rec=r) for i, r in enumerate([cut, unknown_type, wrong_block])]
+
+    p = _series_store(tmp_path, hxformat.FS_16_115, make)
+    got = {e.subject: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}
+    for i in range(3):
+        assert got[f"Odd {i}"].rrule is None and got[f"Odd {i}"].recurrence_unparsed
+
+
+def test_event_not_yet_stored_on_the_server_is_skipped(archive, tmp_path):
+    def make(event):
+        return [event(0xA300, uid="1f0c2f1e-synthetic@new-outlook-mcp.local", subject="Just created", start=S,
+                      end=_utc(2026, 11, 16, 11))]
+
+    p = _series_store(tmp_path, hxformat.FS_16_115, make)
+    res = run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert "events not yet stored on the server skipped (imported on a later sync): 1" in res.message
+    evs = caltools.list_calendar_events(archive, "2026-11-16", "2026-11-17", timezone_name="UTC")["events"]
+    assert "Just created" not in [e["subject"] for e in evs]

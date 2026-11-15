@@ -34,6 +34,8 @@ HFL_NAME = "hxcore.hfl"
 MAX_FAILED_RATIO = 0.02
 MIN_FAILED_BLOCKS = 5
 COPY_ATTEMPTS = 2
+#: Every event the server has stored carries a global object id in this form as its UID.
+SERVER_UID_PREFIX = "040000008200E00074C5B7101A82E008"
 RETRY_DELAY = 2.0
 
 
@@ -268,6 +270,11 @@ class HxStoreImporter(Importer):
                 # Seen on 16.113.4: stub objects without strings, some typed as series masters.
                 self.stats.count("empty event stubs skipped")
                 continue
+            if e.uid and not e.uid.upper().startswith(SERVER_UID_PREFIX):
+                # A new event keeps the UID it was created with until the server has stored it. Outlook then
+                # replaces the object (new id, server UID), so importing this one would leave a duplicate.
+                self.stats.count("events not yet stored on the server skipped (imported on a later sync)")
+                continue
             if e.recurrence_unparsed:
                 self.stats.count("recurring series with an unknown pattern (first occurrence only)")
             try:
@@ -294,6 +301,12 @@ class HxStoreImporter(Importer):
             rec.body_text = e.preview
         rec.online_meeting_url = e.online_meeting_url or find_meeting_url(e.location, rec.body_text)
         rec.rrule = e.rrule
+        if e.rrule:
+            day = (lambda t: t.date().isoformat()) if e.all_day else (lambda t: t.isoformat())
+            rec.exdates = [day(t) for t in e.deleted_occurrences]
+            if e.changed_occurrences:
+                # Where a changed occurrence went is not in the event object, so it stays at its original time.
+                self.stats.count("moved or edited occurrences shown at their original time", len(e.changed_occurrences))
         rec.my_response = e.my_response
         rec.busy_status = e.show_as
         rec.calendar = e.calendar

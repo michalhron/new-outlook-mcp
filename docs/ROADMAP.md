@@ -38,7 +38,7 @@ Ground rules for every phase:
 - [x] Attachment records → mapping to files in `Main Profile/Files/` (format verified; real files pending an experiment)
 - [x] Orphan files: index attachment files and `EFMData` bodies in `Files/` that no record references, `search_files`, validate counts
 - [ ] Check orphan indexing and body matching on the real `Files/` folder (run `new-outlook validate`)
-- [x] Calendar records (see Phase 4); recurrence beyond weekly still open
+- [x] Calendar records (see Phase 4); all repeat patterns and deleted occurrences decoded; moved occurrences still open
 - [x] `new-outlook experiment start/finish`: snapshot pair with a structural diff report
 - [ ] Differential experiments run on the real Mac to confirm field encodings
 - [x] Format notes kept current in [hxstore-notes.md](hxstore-notes.md)

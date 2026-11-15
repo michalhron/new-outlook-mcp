@@ -25,7 +25,7 @@ The importer reads messages, recipients, folders, accounts, attachments (metadat
 | Has-attachment flag | set where attachment objects exist | C |
 | Event UID, start, end, timezone, calendar | 100% of non-stub events | V |
 | Event attendees | parsed for every event that has a list | V |
-| Recurrence rule | 2 real series, both weekly | I |
+| Recurrence rule | every pattern Outlook offers, from 14 synthetic and 3 real series | V |
 
 ## Container
 
@@ -350,7 +350,54 @@ The sample did not include the `Files/` folder, so the mapping from reference to
 
 **Event detail (class 0x6c):** UTF-8 HTML body at +0x258, join URL at +0x2bc. (V)
 
-**Recurrence (I).** In a series master, area one starts with u64 series-start ticks, an optional u64 UNTIL, u16 1, u32 interval and u8 weekday (0 = Sunday). The importer turns that into `FREQ=WEEKLY;INTERVAL=n;BYDAY=XX[;UNTIL=date]`. This rests on 2 real series, both weekly, so daily, monthly and yearly patterns are not decoded. A master whose pattern is not recognised is imported with its first occurrence only and counted in the sync notes. The sample held no occurrence or exception objects, so deleted or moved occurrences (exdates) are unknown. Five more objects were typed as masters but had no UID and no strings. The importer skips them as stubs.
+**Recurrence.** See [Recurrence](#recurrence-2026-11-15). The description that stood here until 2026-11-15 (area one starting with the series start, an optional end date and one weekday) was wrong: it misread the range block and a weekday-list count, and turned "last Thursday of the month" into a weekly rule.
+
+## Recurrence (2026-11-15)
+
+Found on Outlook 16.115 with 14 synthetic series, each created from an `.ics` file with a known RRULE, and checked on real series in three cache copies. All fields are in the series master (0x6b event with event type 3). Offsets are for 16.115 (fs 0x459). On 16.114.3 (fs 0x455) every one of them except the deleted-occurrence list is 4 lower, as for the other event fields from +0x30c on; this was checked on the 16.114.3 copy (type bytes on all 193 events, blocks on its 3 real series). 16.113.4 has the same size as 16.114.3 and is inferred.
+
+**Type bytes (V).**
+
+| Byte | Values |
+|---|---|
+| +0x435 pattern | 1 daily, 2 weekly, 3 monthly on a day, 4 monthly on the Nth weekday, 5 yearly on a date, 6 yearly on the Nth weekday of a month; 8 on events that do not repeat |
+| +0x436 range | 0 no end, 1 end date, 2 after N occurrences; 3 on events that do not repeat |
+
+On all 213 events of the copy, the pair is (8, 3) exactly when the event is not a master.
+
+**Blocks (V).** A run of nine area-one descriptors from +0x390, one per pattern kind and one per range kind. A master fills exactly the two that its type bytes name.
+
+| Descriptor | Block | Bytes |
+|---|---|---|
+| +0x390 | daily | u16 interval |
+| +0x398 | range with end date | u64 first day, u64 last day |
+| +0x3a0 | monthly on a day | u16 interval, u8 day of month, u8 first day of week |
+| +0x3a8 | monthly on the Nth weekday | u16 interval, weekday list, u8 week index, u8 first day of week |
+| +0x3b0 | range without end | u64 first day |
+| +0x3b8 | range with a count | u64 first day, u32 occurrences |
+| +0x3c0 | weekly | u16 interval, weekday list, u8 first day of week |
+| +0x3c8 | yearly on a date | u16 interval, u8 month, u8 day, u8 first day of week, u8 0 |
+| +0x3d0 | yearly on the Nth weekday | u16 interval, u8 month, weekday list, u8 week index, u8 first day of week, u8 0 |
+
+- A weekday list is a u32 count and one byte per day, 0 = Sunday to 6 = Saturday.
+- The week index is 0 first, 1 second, 2 third, 3 fourth, 4 last.
+- Range days are the local calendar day stored as midnight UTC, not the time of the first occurrence.
+- "First day of week" was 1 (Monday) in every block seen, so that reading is inferred (I), as is the last byte of the yearly blocks. The decoder writes it as WKST for weekly rules and otherwise only checks that the block has the expected length.
+
+Evidence:
+
+- All 14 synthetic series decode to the rule they were created with: daily with interval 2 and an end date; daily with a count; weekly on three days, on five days, and every 2 weeks on Saturday and Sunday with an end date; monthly on day 15 and every 3 months on day 28; monthly on the second Tuesday, the fourth Wednesday, the last Friday with a count, and every 2 months on the first Monday; yearly on a date, every 2 years on a date, and on the third Thursday of March.
+- Each value that can vary was seen with at least two values: interval (1, 2, 3), weekday codes 0 to 6, week index 0 to 4, all three range kinds.
+- Real series: three in each of three copies (16.114.3, and 16.115 on two days) decode as "last Thursday of the month", two of them with an end date, and each starts on a last Thursday. Five more masters are the stubs without UID or subject noted before; their blocks decode as weekly on the weekday they start on.
+- Not seen: a weekday list with several days in a monthly or yearly block ("last weekday of the month"). The decoder writes it as BYDAY with BYSETPOS, which follows from the fields but is untested (I).
+
+**Deleted occurrences (V).** Descriptor +0x2d8 (same offset on 16.114.3) points to a list of u64 ticks in area one: the original UTC start of each deleted occurrence. Deleting one occurrence of a synthetic series added one entry with exactly that start; nothing else in the master changed apart from stamps. One real series has an entry too. The importer turns them into exception dates.
+
+**Moved or edited occurrences (list V, content not found).** Descriptor +0x318 holds the same kind of list for occurrences that were changed: moving one occurrence added its original start there. The new time is not in the event object, and no object in the cache held it once Outlook had sent the change to the server (while the change was pending, a queue object of class 0x4008 held the old and new times). No exception or occurrence event objects (event types 1 and 2) exist in any copy, although one real series has a changed occurrence. So the importer keeps such an occurrence at its original time and counts it in the sync notes ("moved or edited occurrences shown at their original time").
+
+**Events not yet on the server (C).** A new event first exists as an object with the UID it was created with. When the server has stored it, Outlook replaces that object with a new one: new id, and the UID in the server's global-object-id form (`040000008200E00074C5B7101A82E008…`). A sync that ran in between imported both, and the first stayed in the archive as a duplicate. Every one of 1,186 events in six copies has the server form, and the two transient objects that were caught did not. The importer now skips an event whose UID has another form and counts it; it arrives with a later sync. A calendar on a server that does not use this UID form would be skipped entirely, which the sync notes would show.
+
+A master whose blocks do not fit this description exactly is imported with its first occurrence only and counted, as before.
 
 ## Public prior work
 
@@ -370,7 +417,8 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 - The byte at 0xc9 +0x5df and the tick values that change when a message is marked read.
 - The second name/address pair at +0x440/+0x448.
 - Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).
-- Recurrence beyond weekly, exceptions and deleted occurrences.
+- Where the new time of a moved or edited occurrence is kept.
+- The meaning of the last byte of each monthly, weekly and yearly recurrence block (read as first day of week) and of the extra byte in the yearly blocks.
 - My-response code 2 (assumed declined).
 - Whether the 51-byte key equals Graph's ImmutableId.
 - The header fields at 0x10 and 0x68, and the region at 0x3000.

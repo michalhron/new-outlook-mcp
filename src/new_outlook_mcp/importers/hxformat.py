@@ -78,6 +78,17 @@ _MAIL_ACCOUNT = {"account": 0x44}
 _FILE = {"path": 0x88}
 _EVENT_DETAIL = {"html": 0x258, "join_url": 0x2BC}
 _EVENT_FIXED = {"start": 0x248, "end": 0x250, "preview": 0x2BC, "detail": 0xB4, "calendar": 0xE0}
+
+
+def _recurrence_fields(base: int, *, types: int, modified: int) -> dict[str, int]:
+    """Recurrence fields of a series master: two type bytes, one descriptor per pattern and per range
+    kind (a block of 8-byte descriptors from `base`), and the two exception lists."""
+    names = ("rec_daily", "rec_until", "rec_monthly", "rec_monthly_rel", "rec_no_end", "rec_count",
+             "rec_weekly", "rec_yearly", "rec_yearly_rel")
+    return {"rec_type": types, "rec_range": types + 1, "rec_deleted": 0x2D8, "rec_modified": modified,
+            **{name: base + 8 * i for i, name in enumerate(names)}}
+
+
 FIELDS = {
     (C_ACCOUNT, 0x1992): {"smtp": 0x156C},
     (C_ACCOUNT, 0x19D0): {"smtp": 0x159C},
@@ -91,10 +102,12 @@ FIELDS = {
     (C_EVENT, 0x455): _EVENT_FIXED | {"uid": 0x334, "subject": 0x400, "tz": 0x30C, "location": 0x344, "org_name": 0x374,
                        "org_addr": 0x37C, "attendees": 0x36C, "show_as": 0x330, "event_type": 0x388,
                        "response": 0x3E0, "flags": 0x43A, "all_day_bit": 0x08, "cancelled_bit": 0x10,
+                       **_recurrence_fields(0x38C, types=0x431, modified=0x314),
                        "strings": (0x2BC, 0x304, 0x344, 0x374, 0x37C, 0x3D4, 0x400)},
     (C_EVENT, 0x459): _EVENT_FIXED | {"uid": 0x338, "subject": 0x404, "tz": 0x310, "location": 0x348, "org_name": 0x378,
                        "org_addr": 0x380, "attendees": 0x370, "show_as": 0x334, "event_type": 0x38C,
                        "response": 0x3E4, "flags": 0x43E, "all_day_bit": 0x10, "cancelled_bit": 0x20,
+                       **_recurrence_fields(0x390, types=0x435, modified=0x318),
                        "strings": (0x2BC, 0x308, 0x30C, 0x348, 0x378, 0x380, 0x3D8, 0x404)},
 }
 # Classes whose offsets are the same in every build so far.
@@ -603,6 +616,8 @@ class HxEvent:
     event_type: str
     rrule: str | None
     recurrence_unparsed: bool
+    deleted_occurrences: list[datetime]  # original start times (UTC) of occurrences deleted from a series
+    changed_occurrences: list[datetime]  # original start times (UTC) of occurrences moved or edited
     my_response: str | None
     show_as: str | None
     calendar: str | None
@@ -649,27 +664,110 @@ def _attendees(ob: Obj) -> list[dict] | None:
     return out
 
 
+#: Pattern type byte -> (descriptor field, RRULE frequency). 8 marks an event that does not repeat.
+REC_PATTERN = {1: ("rec_daily", "DAILY"), 2: ("rec_weekly", "WEEKLY"), 3: ("rec_monthly", "MONTHLY"),
+               4: ("rec_monthly_rel", "MONTHLY"), 5: ("rec_yearly", "YEARLY"), 6: ("rec_yearly_rel", "YEARLY")}
+#: Range type byte -> descriptor field. 3 marks an event that does not repeat.
+REC_RANGE = {0: "rec_no_end", 1: "rec_until", 2: "rec_count"}
+REC_NONE = (8, 3)
+#: Week index of "the Nth weekday": 0 first .. 3 fourth, 4 last.
+REC_INDEX = {0: 1, 1: 2, 2: 3, 3: 4, 4: -1}
+
+
+def _area_one_blob(ob: Obj, rel: int) -> bytes | None:
+    sp = ob.span(rel)
+    return ob.raw[sp[0]:sp[1]] if sp and sp[1] <= ob.fs + ob.lead else None
+
+
+def _weekdays(b: bytes, pos: int) -> tuple[list[str], int] | None:
+    """u32 count, then one byte per weekday (0 = Sunday). Returns the day codes and the next position."""
+    if pos + 4 > len(b):
+        return None
+    n, = struct.unpack_from("<I", b, pos)
+    days = b[pos + 4:pos + 4 + n]
+    if not 1 <= n <= 7 or len(days) != n or any(d > 6 for d in days) or len(set(days)) != n:
+        return None
+    return [DAYS[d] for d in days], pos + 4 + n
+
+
 def _recurrence(ob: Obj) -> str | None:
-    """INFERRED from weekly series only: area one = u64 start ticks, [u64 until ticks],
-    u16 1, u32 interval, u8 weekday (0 = Sunday). Anything else returns None."""
-    a = ob.raw[ob.fs:ob.fs + ob.lead]
-    if len(a) < 24:
+    """RRULE of a series master, or None when any part does not fit what has been verified.
+
+    The pattern block starts with a u16 interval. What follows depends on the pattern type:
+    daily nothing; weekly a weekday list and the first day of the week; monthly a day of month,
+    or a weekday list and a week index; yearly a month before either of those. The range block is
+    the series start date, then nothing, an end date, or a u32 count.
+    """
+    kind = REC_PATTERN.get(ob.raw[ob.at("rec_type")])
+    range_field = REC_RANGE.get(ob.raw[ob.at("rec_range")])
+    if not kind or not range_field:
         return None
-    j, until = 8, None
-    if a[8:10] != b"\x01\x00":
-        until = struct.unpack_from("<Q", a, 8)[0]
-        j = 16
-    if a[j:j + 2] != b"\x01\x00" or len(a) < j + 7:
+    b, rng = _area_one_blob(ob, ob.at(kind[0])), _area_one_blob(ob, ob.at(range_field))
+    if not b or not rng or len(b) < 2:
         return None
-    interval = struct.unpack_from("<I", a, j + 2)[0]
-    dow = a[j + 6]
-    if not (0 <= dow < 7 and 0 < interval < 100):
+    interval, = struct.unpack_from("<H", b, 0)
+    if not 0 < interval < 1000:
         return None
-    rule = f"FREQ=WEEKLY;INTERVAL={interval};BYDAY={DAYS[dow]}"
-    u = ticks(until) if until and until != TICKS_MAX else None
-    if u:
-        rule += ";UNTIL=" + u.strftime("%Y%m%d")
-    return rule
+    parts = [f"FREQ={kind[1]}", f"INTERVAL={interval}"]
+    field, pos = kind[0], 2
+    if field in ("rec_yearly", "rec_yearly_rel"):
+        if len(b) < 3 or not 1 <= b[2] <= 12:
+            return None
+        parts.append(f"BYMONTH={b[2]}")
+        pos = 3
+    if field == "rec_daily":
+        tail = 0
+    elif field == "rec_weekly":
+        got = _weekdays(b, pos)
+        if not got:
+            return None
+        days, pos = got
+        if pos >= len(b) or b[pos] > 6:
+            return None
+        parts += ["BYDAY=" + ",".join(days), f"WKST={DAYS[b[pos]]}"]
+        pos, tail = pos + 1, 0
+    elif field in ("rec_monthly", "rec_yearly"):
+        if pos >= len(b) or not 1 <= b[pos] <= 31:
+            return None
+        parts.append(f"BYMONTHDAY={b[pos]}")
+        pos, tail = pos + 1, (1 if field == "rec_monthly" else 2)
+    else:  # the Nth weekday of the month
+        got = _weekdays(b, pos)
+        if not got:
+            return None
+        days, pos = got
+        nth = REC_INDEX.get(b[pos]) if pos < len(b) else None
+        if nth is None:
+            return None
+        parts.append(f"BYDAY={nth}{days[0]}" if len(days) == 1 else "BYDAY=" + ",".join(days) + f";BYSETPOS={nth}")
+        pos, tail = pos + 1, (1 if field == "rec_monthly_rel" else 2)
+    if len(b) != pos + tail:  # the tail bytes (first day of week and, for yearly, one more) are not used
+        return None
+    want = {"rec_no_end": 8, "rec_until": 16, "rec_count": 12}[range_field]
+    if len(rng) != want:
+        return None
+    if range_field == "rec_until":
+        until = ticks(struct.unpack_from("<Q", rng, 8)[0])
+        if until is None:
+            return None
+        parts.append("UNTIL=" + until.strftime("%Y%m%d"))  # the last day, as a local date
+    elif range_field == "rec_count":
+        count, = struct.unpack_from("<I", rng, 8)
+        if not 0 < count < 10000:
+            return None
+        parts.append(f"COUNT={count}")
+    return ";".join(parts)
+
+
+def _occurrence_list(ob: Obj, rel: int) -> list[datetime] | None:
+    """Original start times (UTC) of deleted or changed occurrences. None when the bytes do not fit."""
+    b = _area_one_blob(ob, rel)
+    if not b:
+        return []
+    if len(b) % 8:
+        return None
+    out = [ticks(v) for v, in struct.iter_unpack("<Q", b)]
+    return None if any(t is None for t in out) else out
 
 
 def iter_events(store: Store) -> Iterator[HxEvent]:
@@ -695,6 +793,8 @@ def iter_events(store: Store) -> Iterator[HxEvent]:
             join = store.first(details, lambda o: o.text(o.at("join_url")))
         etype = EVENT_TYPE.get(ob.u32(ob.at("event_type")), "unknown")
         rrule = _recurrence(ob) if etype == "master" else None
+        deleted = (_occurrence_list(ob, ob.at("rec_deleted")) if etype == "master" else None) or []
+        changed = (_occurrence_list(ob, ob.at("rec_modified")) if etype == "master" else None) or []
         flags = ob.raw[ob.at("flags")]
         cal_name, cal_account = calendars.get(ob.u64(ob.at("calendar")), (None, None))
         yield HxEvent(
@@ -716,6 +816,8 @@ def iter_events(store: Store) -> Iterator[HxEvent]:
             event_type=etype,
             rrule=rrule,
             recurrence_unparsed=etype == "master" and rrule is None,
+            deleted_occurrences=deleted,
+            changed_occurrences=changed,
             my_response=MY_RESPONSE.get(ob.u32(ob.at("response"))),
             show_as=SHOW_AS.get(ob.u32(ob.at("show_as"))),
             calendar=cal_name,

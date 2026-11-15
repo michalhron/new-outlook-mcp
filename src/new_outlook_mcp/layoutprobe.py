@@ -16,6 +16,7 @@ import collections
 import json
 import re
 import sqlite3
+import struct
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -283,6 +284,20 @@ def _attachment_fields(tr: Truth, fs: int):
     }
 
 
+#: Byte lengths a recurrence block can have (0 = absent). Lists of dates are multiples of 8.
+_REC_BLOCK_SIZES = {"rec_daily": (2,), "rec_until": (16,), "rec_monthly": (4,), "rec_monthly_rel": range(9, 16),
+                    "rec_no_end": (8,), "rec_count": (12,), "rec_weekly": range(8, 15), "rec_yearly": (6,),
+                    "rec_yearly_rel": range(11, 18), "rec_deleted": range(8, 4096, 8),
+                    "rec_modified": range(8, 4096, 8)}
+
+
+def _block_of(sizes):
+    def check(o, off, _t) -> bool:
+        start, ln = struct.unpack_from("<II", o.raw, off)
+        return (start, ln) == (0, 0) or (not ln >> 31 and ln in sizes and start + ln <= o.lead)
+    return check
+
+
 def _event_fields(tr: Truth, fs: int):
     rows = {r["uid"]: r for r in tr.conn.execute(
         "SELECT * FROM events WHERE first_source = 'hxstore' AND uid IS NOT NULL")}
@@ -313,6 +328,13 @@ def _event_fields(tr: Truth, fs: int):
                           need=lambda v: True),
         "attendees": col("subject", lambda o, off, t: bool(o.text(off)) and t.endswith(o.text(off))),
         "calendar": ([(o, calendars) for o, _ in pairs], lambda o, off, t: o.u64(off) in t),
+        # Recurrence: the two type bytes against "has a rule" in the archive, the blocks by their length.
+        "rec_type": col("rrule", lambda o, off, t: (o.raw[off] in hx.REC_PATTERN) if t else o.raw[off] == hx.REC_NONE[0],
+                        need=lambda v: True),
+        "rec_range": col("rrule", lambda o, off, t: (o.raw[off] in hx.REC_RANGE) if t else o.raw[off] == hx.REC_NONE[1],
+                         need=lambda v: True),
+        **{name: ([(o, None) for o, _ in pairs], _block_of(sizes))
+           for name, sizes in _REC_BLOCK_SIZES.items()},
     }
 
 

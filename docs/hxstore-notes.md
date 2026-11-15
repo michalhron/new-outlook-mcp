@@ -291,6 +291,24 @@ What the importer does:
 - For one Message-ID in two folders, flag and categories come from the received copy, like the folder.
 - `layout-probe` has a check for each of these fields. Nearly all mail is normal, unflagged and uncategorised, so after a change of class 0xc9 they will mostly be placed by their neighbours or by hand.
 
+## Meeting responses (2026-11-15)
+
+Three synthetic invitations were sent from a second account and answered in Outlook: one accepted, one declined, one tentative.
+
+| Answer | Event in the cache afterwards | My response (u32, +0x3e4 on 16.115) | Show as | My own attendee record |
+|---|---|---|---|---|
+| accepted | yes | 0 | 2 busy | 0 |
+| tentative | yes | 1 | 1 tentative | 1 |
+| declined | **no event object** | not observable | | |
+
+- **0 accepted and 1 tentative are verified** for my response and, through my own attendee record, for the attendee response code.
+- **Declining removes the event.** The declined invitation has no 0x6b object in the cache after the answer, and none of 215 events in the copy carries my-response code 2 (the codes present are 0, 1, 3 and 4). So code 2 cannot be seen on one's own calendar. That it means "declined" stays inferred: it is the one answer left between the verified 1 and 3. The decoder keeps the mapping, which in practice never fires.
+- **Attendee code 2 (C).** It occurs on 5 attendee records, one of them in a meeting the mailbox owner organised, where another person's decline is exactly what an organiser sees. Not confirmed with a synthetic decline from a second account.
+- My own attendee record equals the my-response field in 18 of 19 events where I am an attendee; the one difference is a record that still says "not responded".
+- The answers also leave messages in Sent Items with the classes `IPM.Schedule.Meeting.Resp.Pos`, `.Neg` and `.Tent`, and the invitations (`IPM.Schedule.Meeting.Request`) move to Deleted Items. These are ordinary 0xc9 messages.
+
+No decoder change was needed.
+
 ## Bcc (2026-11-15)
 
 **Recipient kind 0xce is Bcc (V).** A Bcc recipient is a 0x55 object like To and Cc, with parent property 0xce, which continues the sequence 0xcc To, 0xcd Cc.
@@ -353,7 +371,7 @@ The sample did not include the `Files/` folder, so the mapping from reference to
 | Preview | +0x2bc | V |
 | Show as | u32 at +0x330: 0 free, 1 tentative, 2 busy | C |
 | Event type | u32 at +0x388: 0 single, 1 occurrence, 2 exception, 3 series master | C |
-| My response | u32 at +0x3e0: 0 accepted, 1 tentative, 2 declined (I), 3 organizer, 4 not responded | C |
+| My response | u32 at +0x3e0: 0 accepted (V), 1 tentative (V), 2 declined (I), 3 organizer, 4 not responded. See [Meeting responses](#meeting-responses-2026-11-15). | C |
 | Attendees | after the +0x36c string: u32 count, then per attendee u8 name length, UTF-16LE name, u8 address length, UTF-16LE address, u32 optional flag, u32 response (0 accepted, 1 tentative, 2 declined, 4 none), u32 unknown | V |
 | Detail | typed reference at +0xaa (id at +0xb4) to a 0x6c object | V |
 | Calendar | u64 at +0xe0 = 0x68 calendar id. Calendar name at 0x68 +0x30c, owner address at +0x2c8. | C |
@@ -429,7 +447,7 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 - Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).
 - Where the new time of a moved or edited occurrence is kept.
 - The meaning of the last byte of each monthly, weekly and yearly recurrence block (read as first day of week) and of the extra byte in the yearly blocks.
-- My-response code 2 (assumed declined).
+- My-response code 2 (assumed declined; a declined event leaves the cache, so it cannot be observed) and attendee code 2 (declined, correlated).
 - Whether the 51-byte key equals Graph's ImmutableId.
 - The header fields at 0x10 and 0x68, and the region at 0x3000.
 - The second HTML body at 0xca +0x67c (16.114.3): whether it is the full body, and whether to prefer it.

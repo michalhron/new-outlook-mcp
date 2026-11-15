@@ -10,6 +10,7 @@
 - Bcc recipients are known only for mail you sent, from its Sent Items copy.
 - Recurring events in New Outlook: every repeat pattern and deleted occurrences are decoded. An occurrence that was moved or edited still shows at its original time, because the cache does not hold where it went. A published ICS feed has those too ([calendar.md](calendar.md)).
 - An event you just created appears after the sync that follows Outlook saving it to the server.
+- A meeting you declined disappears from New Outlook's cache, so it is not in the archive's calendar unless a sync saw it before you answered.
 - Orphan files carry the date of the file and have no sender or folder.
 - Free/busy covers only your own calendar.
 - `hxcore.hfl`, New Outlook's journal, is copied but not parsed. Very recent changes may live only there until Outlook writes them into `HxStore.hxd`.

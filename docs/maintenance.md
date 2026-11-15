@@ -2,7 +2,8 @@
 
 ## Known limitations
 
-- The archive only sees what Outlook keeps on this Mac. New Outlook caches about the last two months densely, plus older items you opened or searched for. Search for old mail in Outlook to bring it into the cache.
+- The archive only sees what Outlook keeps on this Mac. New Outlook caches about the last two months densely, plus older items you opened or searched for. Search for old mail in Outlook to bring it into the cache, or let the `fetch_from_outlook` tool run that search ([tools.md](tools.md#fetching-older-mail)).
+- `fetch_from_outlook` depends on the layout of Outlook's window and can stop working after an Outlook update. Attachment files of fetched mail still need a click in Outlook.
 - Read state, folder, flag and categories of New Outlook mail are the state at the last sync. Once a message has left Outlook's cache, the archive keeps the last state it saw: a later move, or a deletion, is not noticed. Drafts usually count as unread.
 - A message with copies in two folders (mail to yourself) is one archive row, shown in the folder of the received copy.
 - Flag, importance and categories are known for mail seen in New Outlook's cache only, not for mail that exists only in the legacy archive.

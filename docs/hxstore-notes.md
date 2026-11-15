@@ -131,6 +131,16 @@ What the sample shows (aggregates only):
 
 Consequence for the sync plan: every 36 hours is well inside an 8-week window. The archive keeps everything it has seen, so older messages that drop out of the cache remain searchable.
 
+### What a search in Outlook adds (2026-11-15)
+
+Measured on 16.115 with three before/after pairs. Counts only.
+
+- **Scrolling search results** adds a 0xc9 message and an (empty) 0xca body object per result, without opening anything: 804 messages after scrolling one word search to its end. Each has subject, sender, dates, folder reference and Message-ID; 783 have the preview. None has an HTML body, 3 have recipient objects, none has attachment objects (155 carry only the has-attachment bit).
+- **Opening results** completes them: five clicks completed 11 messages (Outlook opens the conversation), each with body and recipient objects, 10 with attachment objects. The attachment files were present for 4 of those messages and not downloaded for 6.
+- **Reach.** A word search stopped after about eight months of results. A `received:` date range for two earlier months returned 557 further messages.
+- **Search results are temporary.** The next search removed 534 of the first search's 804 messages from the cache again. The archive keeps what a sync saw, so a sync has to run between searches; the watcher and the `fetch_from_outlook` tool both do.
+- Bodies of older mail often survive as orphan `EFMData` files. When a search brings the message header back, the importer matches it to its body file again.
+
 ## hxcore.hfl: write-ahead log or not?
 
 The sample did not include `hxcore.hfl`. Public notes say it is about 50 MB and starts with `08 00 00 00 00 00 01 00`, and none decode it. If it is a write-ahead log, recent changes could sit there before they reach `HxStore.hxd`, and a sync that reads only the store would lag behind.

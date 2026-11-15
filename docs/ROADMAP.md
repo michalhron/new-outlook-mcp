@@ -4,7 +4,7 @@ What we are committed to building, in order. Ideas that are not committed live i
 
 Ground rules for every phase:
 - **Local only.** All data comes from files Outlook already keeps on this Mac. No Graph, EWS, ActiveSync or reused Outlook/OWA tokens.
-- **Read-only towards Outlook.** We read copies of Outlook's files and never write to them.
+- **Read-only towards Outlook.** We read copies of Outlook's files and never write to them. The one tool that operates Outlook's window (`fetch_from_outlook`) only searches and opens messages.
 - **No sending.** Anything outgoing opens as a draft in Outlook, and the user reads it and clicks Send.
 - **Real mail never enters the repo.** Use synthetic fixtures only.
 

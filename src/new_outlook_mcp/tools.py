@@ -9,8 +9,8 @@ import json
 import os
 import re
 import sqlite3
-import time
 import subprocess
+import time
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -1198,8 +1198,60 @@ def find_similar(archive: Archive, email_id: str | None = None, *, attachment_id
         raise ToolInputError(str(exc)) from exc
 
 
+# --------------------------------------------------------- fetch from Outlook
+
+#: Outlook writes what a search loaded to its cache a few seconds later.
+FETCH_SETTLE_SECONDS = 8.0
+
+
+def fetch_from_outlook(archive: Archive, query: str, *, open_top: int = 25, scroll: bool = True,
+                       runner=None, syncer=None, sleep=time.sleep) -> dict:
+    """Run `query` in Outlook's own search so that Outlook downloads the matching mail, then import it.
+
+    See outlook_ui.py for what this does to Outlook's window and mailbox.
+    """
+    from . import outlook_ui
+
+    try:
+        run = outlook_ui.run_search(query, open_top=open_top, scroll_rounds=30 if scroll else 0, runner=runner)
+    except ValueError as exc:
+        raise ToolInputError(str(exc)) from exc
+    except outlook_ui.OutlookUIError as exc:
+        raise ToolInputError(f"Could not operate Outlook: {exc}") from exc
+
+    def known() -> tuple[int, int]:
+        row = archive.conn.execute(
+            """SELECT COUNT(*), SUM(m.body_html IS NOT NULL AND m.body_html != '')
+               FROM messages m WHERE EXISTS (SELECT 1 FROM message_sources s
+                                             WHERE s.message_pk = m.id AND s.source = 'hxstore')""").fetchone()
+        return row[0] or 0, row[1] or 0
+
+    before = known()
+    sleep(FETCH_SETTLE_SECONDS)
+    if syncer is None:
+        from .sync import sync as syncer
+    results = syncer(archive, ["hxstore"])
+    after = known()
+    out = {
+        "query": " ".join(query.split()),
+        "result_rows": run.rows,
+        "opened": run.opened,
+        "new_in_archive": after[0] - before[0],
+        "now_with_full_body": after[1] - before[1],
+        "sync": [{"source": r.source, "status": r.status, "new": r.inserted, "message": r.message[:300]}
+                 for r in results],
+        "note": ("Outlook shows results in rows that include group headers and conversations, so `result_rows` is "
+                 "not a message count. Results that were only scrolled past arrive with subject, sender and a "
+                 "preview; opened ones arrive complete, with their conversation. Mail the archive already had "
+                 "is not counted as new. Outlook writes to its cache with a delay: the watcher picks up the rest."),
+    }
+    if run.note:
+        out["warning"] = run.note
+    return _with_freshness(out, archive)
+
+
 __all__ = [
     "ToolInputError", "semantic_search", "find_similar", "search_emails", "get_email", "get_thread", "list_recent",
     "list_folders", "archive_status", "list_attachments", "get_attachment", "search_files", "build_mailto",
-    "create_draft", "normalize_subject",
+    "create_draft", "normalize_subject", "fetch_from_outlook",
 ]

@@ -29,6 +29,9 @@ its `id`). Bodies are plain text and may be truncated: pass `offset` =
 cache that no archived message owns. Calendar tools work on the user's own calendar only.
 A result with a `warning` field may be missing newer mail: tell the user, do not
 treat an empty result as proof that a message does not exist.
+The archive holds what Outlook has kept on this Mac. When a search misses mail the user expects (often mail
+older than about two months), fetch_from_outlook makes Outlook download it: it operates Outlook's window for up
+to a minute and marks the results it opens as read, so say so before calling it.
 Nothing here can send mail, answer invitations, or change calendar events.
 create_draft, create_reply_draft and create_event_draft only open a draft that the user reviews
 and sends or saves themselves.
@@ -321,6 +324,25 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         names = ["legacy", "hxstore", "ics"] if source == "all" else [source]
         results = sync(archive(), names)
         return {"results": [r.as_dict() for r in results]}
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                             idempotent_hint=False, open_world_hint=True))
+    def fetch_from_outlook(
+        query: Annotated[str, Field(description=(
+            "What to type into Outlook's search box: words, or Outlook search syntax such as "
+            "`from:name`, `subject:word`, `hasattachments:yes`, `received:2026-01-01..2026-02-28`"))],
+        open_top: Annotated[int, Field(ge=0, le=100, description=(
+            "How many results to open, from the top. Opening downloads the full message with its conversation, "
+            "and marks it read. 0 only scrolls: results then arrive with subject, sender and a preview"))] = 25,
+        scroll: Annotated[bool, Field(description="Scroll the result list to load more than the first screen")] = True,
+    ) -> dict:
+        """Make Outlook download older mail that is not on this Mac yet, by running a search in Outlook's own
+        window, then import what arrived. Use it when a search of the archive misses mail the user expects,
+        typically mail older than about two months. It takes over Outlook's window for up to a minute, moves the
+        mouse pointer, and marks the opened results as read: tell the user before calling it and ask them not to
+        type meanwhile. One search reaches a limited stretch of time; use a `received:` date range to go further
+        back. Afterwards search the archive as usual."""
+        return call(tools.fetch_from_outlook, query, open_top=open_top, scroll=scroll)
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
                                              idempotent_hint=False, open_world_hint=True))

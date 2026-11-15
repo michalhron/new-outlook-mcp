@@ -20,7 +20,6 @@ These need a server API, which this project does not use:
 
 - Mail that Outlook never cached on this Mac. Searching for it in Outlook makes Outlook download it, and the watcher picks it up within about a minute.
 - Sending mail, accepting or declining invitations, editing or deleting events, other people's free/busy, the room finder and out-of-office settings.
-- Bcc on New Outlook mail. It is not decoded yet.
 
 ## How sources are combined
 

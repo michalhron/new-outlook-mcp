@@ -168,9 +168,9 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 | Importance | u32 at +0x4b8: 0 low, 1 normal, 2 high | V |
 | Flag status | byte +0x5cc: 0 none, 1 complete, 2 flagged | V |
 | Flag dates | u64 ticks: completed +0x128, start +0x130, due +0x138 | C |
-| Categories | descriptor +0x484: u32 count, then per name u8 byte length and UTF-16LE text | C (one name seen) |
+| Categories | descriptor +0x484: u32 count, then per name u8 byte length and UTF-16LE text | V |
 
-**Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0x19d Reply-To. No Bcc kind was seen. Name at +0x124, address at +0x12c. (C)
+**Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0xce Bcc, 0x19d Reply-To. Name at +0x124, address at +0x12c. (C; Bcc V, see [Bcc](#bcc-2026-11-15))
 
 Offsets in the sections below are for 16.113.4. For the account, folder and body fields that moved in 16.114.3, see [the 16.114.3 section](#outlook-161143-layout-change).
 
@@ -267,10 +267,11 @@ In each pair only this one message object changed in these fields. No other mess
 
 Bit 0x02 of +0x5e7 was set by the first flagging and stayed set through complete and clear. Not decoded. (I)
 
-**Categories (C).** The descriptor at +0x484 points to a list in the string area: u32 count, then per category a u8 byte length and the name in UTF-16LE without NUL. This is the shape of the attendee list in events.
+**Categories (V).** The descriptor at +0x484 points to a list in the string area: u32 count, then per category a u8 byte length and the name in UTF-16LE without NUL. This is the shape of the attendee list in events.
 
 - Assigning one category to one message created the list on that message and on its Sent Items twin: count 1 and the name Outlook shows. Nothing else in the fixed region of the object changed apart from change stamps.
-- No other message in three copies has a list there, so the count and a list of several names rest on one example and on the attendee list's shape. The parser accepts only bytes that fit the shape exactly. Otherwise it imports no list, counts the message in the sync notes, and keeps what the archive had.
+- A second pair added a second category to the same message: count 2 and both names, in the order they were assigned, on both copies.
+- No other message in three older copies has a list there. The parser accepts only bytes that fit the shape exactly. Otherwise it imports no list, counts the message in the sync notes, and keeps what the archive had.
 - The two 0x4f list items of the message also carry the name. Not read.
 
 What the importer does:
@@ -280,6 +281,16 @@ What the importer does:
 - For one Message-ID in two folders, flag and categories come from the received copy, like the folder.
 - `layout-probe` has a check for each of these fields. Nearly all mail is normal, unflagged and uncategorised, so after a change of class 0xc9 they will mostly be placed by their neighbours or by hand.
 
+## Bcc (2026-11-15)
+
+**Recipient kind 0xce is Bcc (V).** A Bcc recipient is a 0x55 object like To and Cc, with parent property 0xce, which continues the sequence 0xcc To, 0xcd Cc.
+
+- Before/after pair: one synthetic message sent with one To and one Bcc address. Its Sent Items copy got two recipient objects, 0xcc and 0xce, with different addresses; the 0xcc one equals the sender, as sent. Its Inbox copy got only the 0xcc one, as a received copy must.
+- That object is the only 0xce recipient among 2,289 in the copy. The copy taken before the pair and the older 16.115 and 16.114.3 copies have none (2,286, 2,359 and 3,137 recipients), which fits a mailbox where Bcc is rarely used.
+- Class 0x55 has one size in all three builds.
+
+The importer fills `bcc` from it. When the same Message-ID also has a received copy, the two merge into one archive row that keeps the Bcc list of the sent copy, in either order. Bcc is only knowable for mail you sent.
+
 ## Live state in the archive (2026-11-15)
 
 Not a format finding, but a rule of the importer that rests on one. Read state, folder, flag and categories change in Outlook after a message was first imported, so for the `hxstore` source they are written on every sync (`LIVE_COLUMNS` in `db.py`). All other fields still keep the first value and only fill gaps.
@@ -288,6 +299,8 @@ Not a format finding, but a rule of the importer that rests on one. Read state, 
 - **Account.** The account of a message does not change and stays as first imported. The new folder is looked up by name under that account, so a folder row never belongs to another account than its message.
 - **Two folders, one Message-ID.** The cache copy of 15 November held three such messages, each a received copy plus a Sent Items copy. All copies report one state, so the result does not depend on their order: unread while any copy is unread, and the folder of the received copy (Sent Items, Drafts and Deleted Items rank after every other folder).
 - **Gone from the cache.** The archive keeps the last folder and read state it saw. It cannot tell a message that was deleted from one that only aged out of the cache.
+
+A synthetic message moved from the Inbox to Archive in Outlook showed Archive after the next sync.
 
 Check on the real archive: before the change 226 of 758 cached messages had another folder in the archive than in the cache (189 now in Archive, 26 in Drafts, 11 in Sent Items). After one sync 3 differ, and those are the Sent Items copies of the three two-folder messages. No folder belongs to another account than its message.
 
@@ -352,10 +365,9 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 
 ## Open questions
 
-- Categories with more than one name on a message, and flags with different start and due dates.
+- Flags with different start and due dates.
 - Bit 0x02 of 0xc9 +0x5e7, set when a message is first flagged.
 - The byte at 0xc9 +0x5df and the tick values that change when a message is marked read.
-- Bcc on sent mail: no recipient kind seen.
 - The second name/address pair at +0x440/+0x448.
 - Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).
 - Recurrence beyond weekly, exceptions and deleted occurrences.

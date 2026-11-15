@@ -195,6 +195,7 @@ class HxStoreImporter(Importer):
         rec.from_name, rec.from_addr = m.from_name, m.from_addr
         rec.to = [s for s in (_fmt(n, a) for n, a in m.to) if s]
         rec.cc = [s for s in (_fmt(n, a) for n, a in m.cc) if s]
+        rec.bcc = [s for s in (_fmt(n, a) for n, a in m.bcc) if s]
         # 2032-01-02 is a "no date" sentinel on some drafts and deleted items.
         rec.date = first_plausible(m.date_received, m.date_sent, m.last_modified)
         rec.folder = m.folder or m.folder_type

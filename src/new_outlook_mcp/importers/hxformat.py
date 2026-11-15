@@ -103,7 +103,7 @@ for _cls, _fields in ((C_MESSAGE, _MESSAGE), (C_RECIPIENT, _RECIPIENT), (C_ATTAC
     for _fs in EXPECTED_FS[_cls]:
         FIELDS.setdefault((_cls, _fs), _fields)
 
-RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0x19D: "reply_to"}
+RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0xCE: "bcc", 0x19D: "reply_to"}
 IMPORTANCE = {0: "low", 1: "normal", 2: "high"}
 FLAG_STATUS = {0: "none", 1: "complete", 2: "flagged"}
 WELL_KNOWN_FOLDER = {0x61: "inbox", 0x63: "archive", 0x64: "drafts", 0x65: "sentitems", 0x67: "deleteditems"}
@@ -439,6 +439,7 @@ class HxMessage:
     from_addr: str | None
     to: list[tuple[str | None, str | None]]
     cc: list[tuple[str | None, str | None]]
+    bcc: list[tuple[str | None, str | None]]  # only on the sender's own copy (Sent Items, Drafts)
     date_sent: datetime | None
     date_received: datetime | None
     last_modified: datetime | None
@@ -555,6 +556,7 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
             from_addr=store.first(c, lambda o: o.text(o.at("from_addr"))),
             to=[r for _, r in sorted(rc.get("to", []))],
             cc=[r for _, r in sorted(rc.get("cc", []))],
+            bcc=[r for _, r in sorted(rc.get("bcc", []))],
             date_sent=ticks(ob.u64(ob.at("sent"))),
             date_received=ticks(ob.u64(ob.at("received"))),
             last_modified=ticks(ob.u64(ob.at("modified"))),

@@ -229,6 +229,7 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         ObjSpec(hx.C_BODY, 0x5002, fs=body_fs, refs={at(hx.C_BODY, "file"): (hx.C_FILE, 0x8001)}),
         ObjSpec(hx.C_FILE, 0x8001, strings={0x88: body_ref}),
         rcpt(0x6004, 0x5002, 0xCC, "Hana Synth", "hana@example.org"),
+        rcpt(0x6005, 0x5002, 0xCE, "Olga Synth", "olga@example.net"),  # Bcc: only the Sent Items copy has it
         # m3: only a preview (body not cached), two copies: the newer one has the moved folder.
         msg(0x5003, subject="Old subject", frm=("Jan Synth", "jan@example.com"), mid="<hx-3@example.com>",
             sent=datetime(2026, 8, 20, tzinfo=timezone.utc), received=datetime(2026, 8, 20, tzinfo=timezone.utc),

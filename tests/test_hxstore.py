@@ -523,3 +523,35 @@ def test_legacy_message_gets_flag_state_from_the_cache(loaded, tmp_path):
     got = tools.get_email(loaded, "alpha-1@example.org")
     assert (got["flag"], got["importance"]) == ("flagged", "high")
     assert tools.search_emails(loaded, None, flagged=False)["total"] == 2  # legacy-only mail matches neither
+
+
+# ---------------------------------------------------------------------- Bcc
+
+def test_bcc_comes_from_the_sent_items_copy(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    m2 = tools.get_email(archive, "hx-2@uni.example.edu")
+    assert m2["bcc"] == ["Olga Synth <olga@example.net>"] and m2["to"] == ["Hana Synth <hana@example.org>"]
+    assert tools.get_email(archive, "hx-1@example.org")["bcc"] == []
+    assert tools.search_emails(archive, None, to="olga@")["total"] == 1
+
+
+@pytest.mark.parametrize("sent_copy_first", [True, False])
+def test_bcc_survives_the_merge_with_the_received_copy(archive, tmp_path, sent_copy_first):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    m2 = _message(objs, 0x5002)
+    # The same mail also arrived in my Inbox (I was in To). That copy has no Bcc recipient.
+    twin = ObjSpec(hxformat.C_MESSAGE, 0x500A, owner=m2.owner, strings=dict(m2.strings), blobs={
+        0x58C: b"\x00\x09\x00\x2e" + (0x500A).to_bytes(8, "little") * 5 + b"\x00\x00\x00"},
+        u64s=dict(m2.u64s), u32s=dict(m2.u32s), refs={0x382: (hxformat.C_FOLDER, 0x2001)}, bytes_at=dict(m2.bytes_at))
+    to = ObjSpec(hxformat.C_RECIPIENT, 0x600A, owner=0x500A, kind=0xCC,
+                 strings={0x124: "Hana Synth", 0x12C: "hana@example.org"})
+    i = objs.index(m2)
+    objs[i:i] = [twin, to] if not sent_copy_first else []
+    if sent_copy_first:
+        objs += [twin, to]
+    write_store(p / "HxStore.hxd", objs)
+    run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    got = tools.get_email(archive, "hx-2@uni.example.edu")
+    assert got["bcc"] == ["Olga Synth <olga@example.net>"] and got["folder"] == "Inbox"

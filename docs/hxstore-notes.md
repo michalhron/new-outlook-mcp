@@ -232,11 +232,22 @@ Other bytes that changed in the same object when the message was marked read, no
 
 What the importer does:
 
-- `messages.is_read` follows the cache on every sync. For this one column the New Outlook cache replaces the value the frozen legacy archive recorded, because the cache is the newer state.
+- `messages.is_read` follows the cache on every sync. The New Outlook cache replaces the value the frozen legacy archive recorded, because the cache is the newer state. The folder is treated the same way (see [Live state](#live-state-in-the-archive-2026-11-15)).
 - A message that sits in two folders with one Message-ID (mail to yourself: Inbox and Sent Items) is one row in the archive. It counts as unread while any copy is unread, since the Sent Items copy is always read.
 - Drafts mostly have the bit clear, as they do in the legacy archive, so an `unread` search also returns drafts.
 - A message that left the cache keeps the last state the archive saw.
 - `layout-probe` checks `read_bit` against the archive when class 0xc9 changes size. Read state changes between syncs, so it will usually report the bit as ambiguous instead of proposing an offset.
+
+## Live state in the archive (2026-11-15)
+
+Not a format finding, but a rule of the importer that rests on one. Read state and folder change in Outlook after a message was first imported, so for the `hxstore` source they are written on every sync (`LIVE_COLUMNS` in `db.py`). All other fields still keep the first value and only fill gaps.
+
+- **Which source wins.** The cache wins over the legacy archive for these two columns. The legacy archive is a frozen copy of old Outlook, so where the two disagree the cache is the later state. The legacy importer is not a live source and never overwrites them, whatever the import order.
+- **Account.** The account of a message does not change and stays as first imported. The new folder is looked up by name under that account, so a folder row never belongs to another account than its message.
+- **Two folders, one Message-ID.** The cache copy of 15 November held three such messages, each a received copy plus a Sent Items copy. All copies report one state, so the result does not depend on their order: unread while any copy is unread, and the folder of the received copy (Sent Items, Drafts and Deleted Items rank after every other folder).
+- **Gone from the cache.** The archive keeps the last folder and read state it saw. It cannot tell a message that was deleted from one that only aged out of the cache.
+
+Check on the real archive: before the change 226 of 758 cached messages had another folder in the archive than in the cache (189 now in Archive, 26 in Drafts, 11 in Sent Items). After one sync 3 differ, and those are the Sent Items copies of the three two-folder messages. No folder belongs to another account than its message.
 
 ## Attachments (class 0x16a)
 

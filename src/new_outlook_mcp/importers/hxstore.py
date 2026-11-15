@@ -41,6 +41,14 @@ def _too_torn(b: hxformat.BlockStats) -> bool:
     return b.failed >= MIN_FAILED_BLOCKS and b.failed_ratio > MAX_FAILED_RATIO
 
 
+#: When one Message-ID has copies in several folders, the archive shows the first of these.
+_SECONDARY_FOLDERS = {"sentitems": 1, "drafts": 2, "deleteditems": 3}
+
+
+def _folder_rank(m: hxformat.HxMessage) -> tuple[int, int]:
+    return _SECONDARY_FOLDERS.get(m.folder_type or "", 0), m.local_id
+
+
 def _fmt(name: str | None, addr: str | None) -> str | None:
     s = mime.format_address(name, addr)
     return s or None
@@ -146,8 +154,19 @@ class HxStoreImporter(Importer):
         store = self._store_for(snapshot)
         messages = list(hxformat.iter_messages(store))
         # One Message-ID can sit in two folders (mail to yourself: Inbox and Sent Items), and the archive
-        # keeps one row for both. The Sent Items copy is always read, so unread wins.
-        unread = {normalize_message_id(m.message_id) for m in messages if m.message_id and not m.is_read}
+        # keeps one row for both. Every copy then reports the same live state, so the row does not
+        # depend on the order of the copies: unread while any copy is unread (the Sent Items copy is
+        # always read), and the folder of the received copy.
+        unread: set[str] = set()
+        home: dict[str, hxformat.HxMessage] = {}
+        for m in messages:
+            if not m.message_id:
+                continue
+            mid = normalize_message_id(m.message_id)
+            if not m.is_read:
+                unread.add(mid)
+            if mid not in home or _folder_rank(m) < _folder_rank(home[mid]):
+                home[mid] = m
         for m in messages:
             self.stats.seen += 1
             if m.key in skip_keys:
@@ -155,8 +174,12 @@ class HxStoreImporter(Importer):
                 continue
             try:
                 rec = self._record(m)
-                if m.message_id and normalize_message_id(m.message_id) in unread:
-                    rec.is_read = False
+                if m.message_id:
+                    mid = normalize_message_id(m.message_id)
+                    if mid in unread:
+                        rec.is_read = False
+                    if home[mid].account == m.account:
+                        rec.folder = home[mid].folder or home[mid].folder_type
                 yield rec
             except Exception as exc:
                 self.stats.errors += 1

@@ -337,6 +337,7 @@ def test_unread_wins_when_a_message_sits_in_two_folders(archive, tmp_path, sent_
     write_store(p / "HxStore.hxd", objs)
     run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
     assert tools.get_email(archive, "hx-1@example.org")["is_read"] is False
+    assert tools.get_email(archive, "hx-1@example.org")["folder"] == "Inbox"  # the received copy, in either order
 
 
 def test_inbox_marker_bit_is_not_the_read_bit(tmp_path):
@@ -361,3 +362,54 @@ def test_cache_read_state_replaces_the_legacy_one(loaded, tmp_path):
     write_store(p / "HxStore.hxd", objs)
     run_import(loaded, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
     assert tools.get_email(loaded, "alpha-1@example.org")["is_read"] is (not before)
+
+
+# ------------------------------------------------------------- folder moves
+
+def _move(objs, oid, folder):
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == oid:
+            o.refs[0x382] = (hxformat.C_FOLDER, folder)
+
+
+def test_folder_follows_the_cache_on_the_next_sync(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    assert tools.get_email(archive, "hx-1@example.org")["folder"] == "Inbox"
+    objs = mailbox(profile)
+    _move(objs, 0x5001, SENT)
+    write_store(profile / "HxStore.hxd", objs)
+    _sync(archive, profile, tmp_path)
+    m1 = tools.get_email(archive, "hx-1@example.org")
+    assert m1["folder"] == "Sent Items" and m1["account"] == ME
+    assert tools.search_emails(archive, None, folder="Inbox")["total"] == 1  # only m3 is left there
+
+
+def test_cache_folder_replaces_the_legacy_one_and_keeps_the_account(loaded, tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == 0x5001:
+            o.strings[0x4CC] = "<alpha-1@example.org>"
+    _move(objs, 0x5001, SENT)
+    before = tools.get_email(loaded, "alpha-1@example.org")
+    assert before["folder"] != "Sent Items"
+    write_store(p / "HxStore.hxd", objs)
+    run_import(loaded, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    after = tools.get_email(loaded, "alpha-1@example.org")
+    assert after["folder"] == "Sent Items" and after["account"] == before["account"]
+    # The folder row belongs to the message's own account.
+    assert loaded.conn.execute(
+        "SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id"
+        " WHERE IFNULL(f.account_id, -1) != IFNULL(m.account_id, -1)").fetchone()[0] == 0
+
+
+def test_a_source_that_is_not_live_does_not_move_a_message(archive, profile, tmp_path):
+    from new_outlook_mcp.model import MessageRecord
+
+    _sync(archive, profile, tmp_path)
+    with archive.transaction():
+        archive.upsert(MessageRecord(source="legacy", source_key="k1", message_id="<hx-1@example.org>",
+                                     folder="Old Folder", account=ME, is_read=True))
+    m1 = tools.get_email(archive, "hx-1@example.org")
+    assert m1["folder"] == "Inbox" and m1["is_read"] is False

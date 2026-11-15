@@ -284,8 +284,9 @@ PLACEHOLDER_FOLDER = re.compile(r"(^|/)folder-\d+(/|$)")
 
 
 #: Columns that follow a source on every sync instead of keeping the first value seen.
-#: New Outlook's cache is live, so its read state replaces what the frozen legacy archive recorded.
-LIVE_COLUMNS: dict[str, tuple[str, ...]] = {"hxstore": ("is_read",)}
+#: New Outlook's cache is the live mailbox, so its read state and folder replace what an earlier
+#: sync or the frozen legacy archive recorded. A source that is not listed only fills gaps.
+LIVE_COLUMNS: dict[str, tuple[str, ...]] = {"hxstore": ("is_read", "folder_id")}
 
 
 def _plausible_bounds() -> tuple[int, int]:
@@ -490,7 +491,8 @@ class Archive:
 
         Merging only fills fields that are still empty. The first importer to see
         a message wins for fields it supplied. The exception is LIVE_COLUMNS: state that
-        changes in Outlook follows a live source on every sync. Call inside `transaction()`.
+        changes in Outlook (read state, folder) follows a live source on every sync.
+        Call inside `transaction()`.
         """
         now = _now()
         key = rec.dedup_key()
@@ -564,6 +566,14 @@ class Archive:
                     continue
                 if existing[col] in (None, "") or col in stale or (col in live and existing[col] != val):
                     updates[col] = val
+            if "folder_id" in live and rec.folder and "account_id" not in updates:
+                # The message keeps its account (it does not change in Outlook, and the first source
+                # named it), so the new folder is looked up under that account, not the record's.
+                moved = self._folder_id(existing["account_id"], rec.folder)
+                if moved != existing["folder_id"]:
+                    updates["folder_id"] = moved
+                else:
+                    updates.pop("folder_id", None)
             if "date_ts" in stale and values["date_ts"] is None:
                 updates["date_ts"] = updates["date_utc"] = None  # a sentinel date is worse than none
             for col, val in lists.items():

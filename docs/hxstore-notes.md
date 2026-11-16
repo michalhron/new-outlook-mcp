@@ -25,7 +25,7 @@ The importer reads messages, recipients, folders, accounts, attachments (metadat
 | Has-attachment flag | set where attachment objects exist | C |
 | Event UID, start, end, timezone, calendar | 100% of non-stub events | V |
 | Event attendees | parsed for every event that has a list | V |
-| Recurrence rule | 2 real series, both weekly | I |
+| Recurrence rule | every pattern Outlook offers, from 14 synthetic and 3 real series | V |
 
 ## Container
 
@@ -163,8 +163,14 @@ If it is a log with valid blocks, the importer can decode it like the store and 
 | Folder | typed reference at +0x382 (id at +0x38c) to a 0x4d folder | V |
 | Account | object parent (+0x20) is the 0x4a mail account. Its u64 at +0x44 is the 0x49 account, whose +0x156c string is the primary SMTP address. | V |
 | Has attachment | bit 0x40 of byte +0x5e6 | C |
+| Read | bit 0x02 of byte +0x5ea, set when read. See [Read state](#read-state-2026-11-15). | V on 16.115 and 16.114.3; I on 16.113.4 |
+| In the Inbox | bit 0x80 of the same byte. Not imported. | C |
+| Importance | u32 at +0x4b8: 0 low, 1 normal, 2 high | V |
+| Flag status | byte +0x5cc: 0 none, 1 complete, 2 flagged | V |
+| Flag dates | u64 ticks: completed +0x128, start +0x130, due +0x138 | C |
+| Categories | descriptor +0x484: u32 count, then per name u8 byte length and UTF-16LE text | V |
 
-**Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0x19d Reply-To. No Bcc kind was seen. Name at +0x124, address at +0x12c. (C)
+**Recipients** are 0x55 objects whose parent is the message. The parent property says the role: 0xcc To, 0xcd Cc, 0xce Bcc, 0x19d Reply-To. Name at +0x124, address at +0x12c. (C; Bcc V, see [Bcc](#bcc-2026-11-15))
 
 Offsets in the sections below are for 16.113.4. For the account, folder and body fields that moved in 16.114.3, see [the 16.114.3 section](#outlook-161143-layout-change).
 
@@ -204,6 +210,99 @@ After the update to 16.115, four classes grew and the importer stopped with `HxS
 | 0x6b event | cancelled flag | byte +0x43a, bit 0x10 | byte +0x43e, bit 0x20 | Agrees with the archive for 47 of 47, and with a cancellation prefix on the subject for 193 of 194. Only 2 cancelled events. | C |
 
 The event strings the attendee parser steps over moved too (+0x304 → +0x308 or +0x30c, +0x3d4 → +0x3d8); both candidates for the first are listed. With them, attendee counts match the archive for all 47 events. A dry-run decode then matched the archive for every event field on all 47 events, and subjects and accounts for all 728 messages already archived apart from Re:/FW: prefixes and messages moved between folders since.
+
+## Read state (2026-11-15)
+
+Found on Outlook 16.115. The 0xc9 message keeps its read state in **bit 0x02 of byte +0x5ea** (`state` and `read_bit` in `FIELDS`). The bit is set when the message is read.
+
+| Evidence | Result | Kind |
+|---|---|---|
+| Before/after pair: one synthetic message in the Inbox, marked read in Outlook, nothing else touched | Exactly one 0xc9 object changed. Byte +0x5ea went 0x80 → 0x82. | before/after |
+| Second pair: the same message marked unread again | Byte +0x5ea went 0x82 → 0x80, and the next sync set the archive row back to unread. +0x5df stayed 0x02, so that byte is not the read state. | before/after |
+| Unread count | The copy held 4 Inbox messages with the bit clear before and 3 after. Outlook showed 3 unread after. | count |
+| The same message's Sent Items copy | bit set in both copies | before/after |
+| 16.115 copy of 14 November, 789 messages | Sent Items: set in 198 of 198. Of the messages the legacy archive holds as read, 184 of 192 have it set. Of those it holds as unread, 2 of 31. | population |
+| 16.114.3 copy of 3 November, 895 messages | Sent Items: 145 of 145. Legacy read: 427 of 435 set. Legacy unread: 4 of 75 set. Drafts: 0 of 26. | population |
+| 505 messages matched by key between those two copies | The bit changed on 1, from clear to set. | stability |
+| First sync with the decoder | Read state in the archive equals the cache for 758 of 758 messages. | import |
+
+The legacy values are older than the cache, so the few disagreements are messages read or marked unread since. No other bit between +0x5dd and +0x60f separates the two legacy groups. The 0x4f list items carry no bit that mirrors it.
+
+Class 0xc9 has the same size (0x60f) in all three builds, and every other 0xc9 offset is shared. The offset is verified on copies from 16.115 and 16.114.3. No 16.113.4 copy was kept, so for that build it is inferred.
+
+Other bytes that changed in the same object when the message was marked read, not decoded: +0x5df went 0x01 → 0x02 (across the store: 0x00 on 429 messages, 0x02 on 355, 0x01 on 5, all five in the Inbox); several u64 tick values were filled or advanced (+0xa8, +0x170, +0x178, a run of 16 at +0x3b0 to +0x42f, +0x438); +0x594 went 0x86 → 0xa6; a u32 at +0x5c8 was filled. (I)
+
+**Bit 0x80 of +0x5ea (C).** Set on every Inbox message and on no other (46 of 46 and 0 of 743 on 16.115). It was cleared on 44 messages that left the Inbox between the two copies. The importer does not read it: the folder reference says the same.
+
+What the importer does:
+
+- `messages.is_read` follows the cache on every sync. The New Outlook cache replaces the value the frozen legacy archive recorded, because the cache is the newer state. The folder is treated the same way (see [Live state](#live-state-in-the-archive-2026-11-15)).
+- A message that sits in two folders with one Message-ID (mail to yourself: Inbox and Sent Items) is one row in the archive. It counts as unread while any copy is unread, since the Sent Items copy is always read.
+- Drafts mostly have the bit clear, as they do in the legacy archive, so an `unread` search also returns drafts.
+- A message that left the cache keeps the last state the archive saw.
+- `layout-probe` checks `read_bit` against the archive when class 0xc9 changes size. Read state changes between syncs, so it will usually report the bit as ambiguous instead of proposing an offset.
+
+## Flag, importance and categories (2026-11-15)
+
+Found on Outlook 16.115 with three synthetic messages: one sent with high importance, one with low, one with normal. All fields are in the 0xc9 message. See [Read state](#read-state-2026-11-15) for why the offsets carry over to the other builds: verified on a 16.114.3 copy where a population exists, inferred on 16.113.4.
+
+**Importance (V).** u32 at +0x4b8: 0 low, 1 normal, 2 high, the codes Exchange uses.
+
+- All six copies of the three messages agree (Inbox and Sent Items copy of each): 2, 0 and 1.
+- The byte is the only one in the fixed region that differs between all three messages and has few values across the store.
+- 16.115 copy, 760 messages: 752 normal, 6 high, 2 low. 16.114.3 copy, 895 messages: 885 normal, 10 high. No other value.
+
+**Flag status (V).** One byte at +0x5cc: 0 not flagged, 2 flagged, 1 complete. The three bytes after it belong to another field (constant on 733 of 760 messages), so it is read as a byte, not a u32.
+
+| Action on one message, one before/after pair each | +0x5cc | +0x128 | +0x130 | +0x138 |
+|---|---|---|---|---|
+| never flagged | 0 | unset | unset | unset |
+| flagged | 2 | unset | that day, 00:00 UTC | that day, 00:00 UTC |
+| marked complete | 1 | that day, 00:00 UTC | unset | unset |
+| flag cleared | 0 | unset | unset | unset |
+
+In each pair only this one message object changed in these fields. No other message in the 16.115 or 16.114.3 copies was ever flagged (byte 0 and all three dates unset on every one), which fits a mailbox where flags are not used but gives no second example.
+
+**Flag dates (C).** +0x128 is the completion date. +0x130 and +0x138 are start and due date; a plain flag sets both to the same day, so which is which rests on the Exchange order (start before due), not on a test with different dates. The importer stores due and completion and ignores start. "Unset" is DateTime.MaxValue.
+
+Bit 0x02 of +0x5e7 was set by the first flagging and stayed set through complete and clear. Not decoded. (I)
+
+**Categories (V).** The descriptor at +0x484 points to a list in the string area: u32 count, then per category a u8 byte length and the name in UTF-16LE without NUL. This is the shape of the attendee list in events.
+
+- Assigning one category to one message created the list on that message and on its Sent Items twin: count 1 and the name Outlook shows. Nothing else in the fixed region of the object changed apart from change stamps.
+- A second pair added a second category to the same message: count 2 and both names, in the order they were assigned, on both copies.
+- No other message in three older copies has a list there. The parser accepts only bytes that fit the shape exactly. Otherwise it imports no list, counts the message in the sync notes, and keeps what the archive had.
+- The two 0x4f list items of the message also carry the name. Not read.
+
+What the importer does:
+
+- `importance`, `flag_status`, `flag_due`, `flag_completed` and `categories_json` are new columns of `messages`. NULL means the source does not say (legacy mail). An importance or flag code outside the tables above is imported as unknown and counted in the sync notes.
+- Flag status, flag dates and categories are live columns: they follow the cache on every sync, and a cleared due or completion date is cleared in the archive. Importance cannot change after sending and only fills gaps.
+- For one Message-ID in two folders, flag and categories come from the received copy, like the folder.
+- `layout-probe` has a check for each of these fields. Nearly all mail is normal, unflagged and uncategorised, so after a change of class 0xc9 they will mostly be placed by their neighbours or by hand.
+
+## Bcc (2026-11-15)
+
+**Recipient kind 0xce is Bcc (V).** A Bcc recipient is a 0x55 object like To and Cc, with parent property 0xce, which continues the sequence 0xcc To, 0xcd Cc.
+
+- Before/after pair: one synthetic message sent with one To and one Bcc address. Its Sent Items copy got two recipient objects, 0xcc and 0xce, with different addresses; the 0xcc one equals the sender, as sent. Its Inbox copy got only the 0xcc one, as a received copy must.
+- That object is the only 0xce recipient among 2,289 in the copy. The copy taken before the pair and the older 16.115 and 16.114.3 copies have none (2,286, 2,359 and 3,137 recipients), which fits a mailbox where Bcc is rarely used.
+- Class 0x55 has one size in all three builds.
+
+The importer fills `bcc` from it. When the same Message-ID also has a received copy, the two merge into one archive row that keeps the Bcc list of the sent copy, in either order. Bcc is only knowable for mail you sent.
+
+## Live state in the archive (2026-11-15)
+
+Not a format finding, but a rule of the importer that rests on one. Read state, folder, flag and categories change in Outlook after a message was first imported, so for the `hxstore` source they are written on every sync (`LIVE_COLUMNS` in `db.py`). All other fields still keep the first value and only fill gaps.
+
+- **Which source wins.** The cache wins over the legacy archive for these two columns. The legacy archive is a frozen copy of old Outlook, so where the two disagree the cache is the later state. The legacy importer is not a live source and never overwrites them, whatever the import order.
+- **Account.** The account of a message does not change and stays as first imported. The new folder is looked up by name under that account, so a folder row never belongs to another account than its message.
+- **Two folders, one Message-ID.** The cache copy of 15 November held three such messages, each a received copy plus a Sent Items copy. All copies report one state, so the result does not depend on their order: unread while any copy is unread, and the folder of the received copy (Sent Items, Drafts and Deleted Items rank after every other folder).
+- **Gone from the cache.** The archive keeps the last folder and read state it saw. It cannot tell a message that was deleted from one that only aged out of the cache.
+
+A synthetic message moved from the Inbox to Archive in Outlook showed Archive after the next sync.
+
+Check on the real archive: before the change 226 of 758 cached messages had another folder in the archive than in the cache (189 now in Archive, 26 in Drafts, 11 in Sent Items). After one sync 3 differ, and those are the Sent Items copies of the three two-folder messages. No folder belongs to another account than its message.
 
 ## Attachments (class 0x16a)
 
@@ -251,7 +350,54 @@ The sample did not include the `Files/` folder, so the mapping from reference to
 
 **Event detail (class 0x6c):** UTF-8 HTML body at +0x258, join URL at +0x2bc. (V)
 
-**Recurrence (I).** In a series master, area one starts with u64 series-start ticks, an optional u64 UNTIL, u16 1, u32 interval and u8 weekday (0 = Sunday). The importer turns that into `FREQ=WEEKLY;INTERVAL=n;BYDAY=XX[;UNTIL=date]`. This rests on 2 real series, both weekly, so daily, monthly and yearly patterns are not decoded. A master whose pattern is not recognised is imported with its first occurrence only and counted in the sync notes. The sample held no occurrence or exception objects, so deleted or moved occurrences (exdates) are unknown. Five more objects were typed as masters but had no UID and no strings. The importer skips them as stubs.
+**Recurrence.** See [Recurrence](#recurrence-2026-11-15). The description that stood here until 2026-11-15 (area one starting with the series start, an optional end date and one weekday) was wrong: it misread the range block and a weekday-list count, and turned "last Thursday of the month" into a weekly rule.
+
+## Recurrence (2026-11-15)
+
+Found on Outlook 16.115 with 14 synthetic series, each created from an `.ics` file with a known RRULE, and checked on real series in three cache copies. All fields are in the series master (0x6b event with event type 3). Offsets are for 16.115 (fs 0x459). On 16.114.3 (fs 0x455) every one of them except the deleted-occurrence list is 4 lower, as for the other event fields from +0x30c on; this was checked on the 16.114.3 copy (type bytes on all 193 events, blocks on its 3 real series). 16.113.4 has the same size as 16.114.3 and is inferred.
+
+**Type bytes (V).**
+
+| Byte | Values |
+|---|---|
+| +0x435 pattern | 1 daily, 2 weekly, 3 monthly on a day, 4 monthly on the Nth weekday, 5 yearly on a date, 6 yearly on the Nth weekday of a month; 8 on events that do not repeat |
+| +0x436 range | 0 no end, 1 end date, 2 after N occurrences; 3 on events that do not repeat |
+
+On all 213 events of the copy, the pair is (8, 3) exactly when the event is not a master.
+
+**Blocks (V).** A run of nine area-one descriptors from +0x390, one per pattern kind and one per range kind. A master fills exactly the two that its type bytes name.
+
+| Descriptor | Block | Bytes |
+|---|---|---|
+| +0x390 | daily | u16 interval |
+| +0x398 | range with end date | u64 first day, u64 last day |
+| +0x3a0 | monthly on a day | u16 interval, u8 day of month, u8 first day of week |
+| +0x3a8 | monthly on the Nth weekday | u16 interval, weekday list, u8 week index, u8 first day of week |
+| +0x3b0 | range without end | u64 first day |
+| +0x3b8 | range with a count | u64 first day, u32 occurrences |
+| +0x3c0 | weekly | u16 interval, weekday list, u8 first day of week |
+| +0x3c8 | yearly on a date | u16 interval, u8 month, u8 day, u8 first day of week, u8 0 |
+| +0x3d0 | yearly on the Nth weekday | u16 interval, u8 month, weekday list, u8 week index, u8 first day of week, u8 0 |
+
+- A weekday list is a u32 count and one byte per day, 0 = Sunday to 6 = Saturday.
+- The week index is 0 first, 1 second, 2 third, 3 fourth, 4 last.
+- Range days are the local calendar day stored as midnight UTC, not the time of the first occurrence.
+- "First day of week" was 1 (Monday) in every block seen, so that reading is inferred (I), as is the last byte of the yearly blocks. The decoder writes it as WKST for weekly rules and otherwise only checks that the block has the expected length.
+
+Evidence:
+
+- All 14 synthetic series decode to the rule they were created with: daily with interval 2 and an end date; daily with a count; weekly on three days, on five days, and every 2 weeks on Saturday and Sunday with an end date; monthly on day 15 and every 3 months on day 28; monthly on the second Tuesday, the fourth Wednesday, the last Friday with a count, and every 2 months on the first Monday; yearly on a date, every 2 years on a date, and on the third Thursday of March.
+- Each value that can vary was seen with at least two values: interval (1, 2, 3), weekday codes 0 to 6, week index 0 to 4, all three range kinds.
+- Real series: three in each of three copies (16.114.3, and 16.115 on two days) decode as "last Thursday of the month", two of them with an end date, and each starts on a last Thursday. Five more masters are the stubs without UID or subject noted before; their blocks decode as weekly on the weekday they start on.
+- Not seen: a weekday list with several days in a monthly or yearly block ("last weekday of the month"). The decoder writes it as BYDAY with BYSETPOS, which follows from the fields but is untested (I).
+
+**Deleted occurrences (V).** Descriptor +0x2d8 (same offset on 16.114.3) points to a list of u64 ticks in area one: the original UTC start of each deleted occurrence. Deleting one occurrence of a synthetic series added one entry with exactly that start; nothing else in the master changed apart from stamps. One real series has an entry too. The importer turns them into exception dates.
+
+**Moved or edited occurrences (list V, content not found).** Descriptor +0x318 holds the same kind of list for occurrences that were changed: moving one occurrence added its original start there. The new time is not in the event object, and no object in the cache held it once Outlook had sent the change to the server (while the change was pending, a queue object of class 0x4008 held the old and new times). No exception or occurrence event objects (event types 1 and 2) exist in any copy, although one real series has a changed occurrence. So the importer keeps such an occurrence at its original time and counts it in the sync notes ("moved or edited occurrences shown at their original time").
+
+**Events not yet on the server (C).** A new event first exists as an object with the UID it was created with. When the server has stored it, Outlook replaces that object with a new one: new id, and the UID in the server's global-object-id form (`040000008200E00074C5B7101A82E008…`). A sync that ran in between imported both, and the first stayed in the archive as a duplicate. Every one of 1,186 events in six copies has the server form, and the two transient objects that were caught did not. The importer now skips an event whose UID has another form and counts it; it arrives with a later sync. A calendar on a server that does not use this UID form would be skipped entirely, which the sync notes would show.
+
+A master whose blocks do not fit this description exactly is imported with its first occurrence only and counted, as before.
 
 ## Public prior work
 
@@ -266,11 +412,13 @@ No SANS, Magnet, Belkasoft, Arsenal, Cellebrite or Hexordia write-up and no Kait
 
 ## Open questions
 
-- Read/unread, flag, importance and categories: not located.
-- Bcc on sent mail: no recipient kind seen.
+- Flags with different start and due dates.
+- Bit 0x02 of 0xc9 +0x5e7, set when a message is first flagged.
+- The byte at 0xc9 +0x5df and the tick values that change when a message is marked read.
 - The second name/address pair at +0x440/+0x448.
 - Folder types 0x62 and 0x66, and the folder hierarchy (parent kind 0x2ab on folders).
-- Recurrence beyond weekly, exceptions and deleted occurrences.
+- Where the new time of a moved or edited occurrence is kept.
+- The meaning of the last byte of each monthly, weekly and yearly recurrence block (read as first day of week) and of the extra byte in the yearly blocks.
 - My-response code 2 (assumed declined).
 - Whether the 51-byte key equals Graph's ImmutableId.
 - The header fields at 0x10 and 0x68, and the region at 0x3000.

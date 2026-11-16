@@ -96,6 +96,16 @@ def _summary(row: sqlite3.Row, snippet: str | None = None) -> dict:
         "account": row["account"],
         "has_attachment": bool(row["has_attachment"]),
     }
+    if row["is_read"] is not None:
+        out["is_read"] = bool(row["is_read"])
+    # Only what stands out, to keep result lists short. get_email has every field.
+    if row["flag_status"] in ("flagged", "complete"):
+        out["flag"] = row["flag_status"]
+    if row["importance"] in ("low", "high"):
+        out["importance"] = row["importance"]
+    cats = json.loads(row["categories_json"] or "[]")
+    if cats:
+        out["categories"] = cats
     if snippet is not None:
         out["snippet"] = snippet
     else:
@@ -143,6 +153,10 @@ def _filter_clauses(
     date_to: str | None = None,
     has_attachment: bool | None = None,
     attachment_name: str | None = None,
+    unread: bool | None = None,
+    flagged: bool | None = None,
+    importance: str | None = None,
+    category: str | None = None,
 ) -> tuple[list[str], list[object]]:
     """SQL conditions (over messages m, folders f, accounts a) shared by every search mode.
 
@@ -176,6 +190,21 @@ def _filter_clauses(
     if has_attachment is not None:
         where.append("m.has_attachment = ?")
         params.append(int(bool(has_attachment)))
+    if unread is not None:
+        # Messages whose read state is unknown (NULL) match neither value.
+        where.append("m.is_read = ?")
+        params.append(int(not unread))
+    if flagged is not None:
+        # A completed flag counts as not flagged. Unknown (NULL) matches neither value.
+        where.append("m.flag_status = 'flagged'" if flagged else "m.flag_status IN ('none', 'complete')")
+    if importance:
+        if importance not in ("low", "normal", "high"):
+            raise ToolInputError("importance must be 'low', 'normal' or 'high'")
+        where.append("m.importance = ?")
+        params.append(importance)
+    if category:
+        where.append("EXISTS (SELECT 1 FROM json_each(m.categories_json) c WHERE c.value LIKE ? ESCAPE '\\')")
+        params.append(_like(category))
     vis, vparams = privacy.message_visible(archive.conn)
     where.append(vis)
     params += vparams
@@ -300,6 +329,10 @@ def _search_emails(
     date_to: str | None = None,
     has_attachment: bool | None = None,
     attachment_name: str | None = None,
+    unread: bool | None = None,
+    flagged: bool | None = None,
+    importance: str | None = None,
+    category: str | None = None,
     sort: str = "relevance",
     limit: int = 20,
     offset: int = 0,
@@ -310,7 +343,8 @@ def _search_emails(
     if mode not in ("keyword", "semantic", "hybrid"):
         raise ToolInputError("mode must be 'keyword', 'semantic' or 'hybrid'")
     where, params = _filter_clauses(archive, from_=from_, to=to, folder=folder, account=account, date_from=date_from,
-                                    date_to=date_to, has_attachment=has_attachment, attachment_name=attachment_name)
+                                    date_to=date_to, has_attachment=has_attachment, attachment_name=attachment_name,
+                                    unread=unread, flagged=flagged, importance=importance, category=category)
     fallback_note = None
     if mode == "semantic" or (mode == "hybrid" and (query or "").strip()):
         from . import semantic
@@ -406,6 +440,10 @@ def get_email(
         "folder": row["folder"],
         "account": row["account"],
         "in_reply_to": row["in_reply_to"],
+        "is_read": None if row["is_read"] is None else bool(row["is_read"]),
+        "importance": row["importance"],
+        "flag": row["flag_status"],
+        "categories": None if row["categories_json"] is None else json.loads(row["categories_json"]),
         "attachments": [dict(a) for a in atts],
         "sources": [s[0] for s in sources],
         "body": chunk,
@@ -413,6 +451,10 @@ def get_email(
         "body_length": len(body),
         "truncated": offset + len(chunk) < len(body),
     }
+    if row["flag_due"]:
+        out["flag_due"] = row["flag_due"]
+    if row["flag_completed"]:
+        out["flag_completed"] = row["flag_completed"]
     if out["truncated"]:
         out["next_offset"] = offset + len(chunk)
     if include_headers:
@@ -502,12 +544,14 @@ def list_recent(
     folder: str | None = None,
     account: str | None = None,
     days: int | None = None,
+    unread: bool | None = None,
+    flagged: bool | None = None,
 ) -> dict:
     date_from = None
     if days:
         date_from = (datetime.now(timezone.utc) - timedelta(days=int(days))).isoformat()
-    res = search_emails(archive, None, folder=folder, account=account, date_from=date_from,
-                        sort="date_desc", limit=limit)
+    res = search_emails(archive, None, folder=folder, account=account, date_from=date_from, unread=unread,
+                        flagged=flagged, sort="date_desc", limit=limit)
     return res
 
 
@@ -1132,7 +1176,7 @@ def semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit
 
 def _semantic_search(archive: Archive, query: str, *, mode: str = "hybrid", limit: int = 10, **filters) -> dict:
     """Search by meaning (see semantic.py). Filters: from_, to, folder, account, date_from, date_to,
-    has_attachment, attachment_name."""
+    has_attachment, attachment_name, unread, flagged, importance, category."""
     from . import semantic
     from .embedder import SemanticUnavailable
 

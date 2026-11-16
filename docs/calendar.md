@@ -6,7 +6,7 @@ The archive holds calendar events from up to three sources and merges them into 
 
 | Source | What it gives | Notes |
 |---|---|---|
-| New Outlook cache (`HxStore.hxd`) | Events New Outlook has synced, with attendees and responses | Recurrence is decoded for weekly patterns only. Other patterns show their first occurrence until an experiment settles them. |
+| New Outlook cache (`HxStore.hxd`) | Events New Outlook has synced, with attendees and responses | Every repeat pattern and deleted occurrences are decoded. A moved or edited occurrence stays at its original time, because the cache does not hold where it went; the ICS feed has it. |
 | Published ICS feed | Your calendar as published from Outlook on the web | Optional. Full recurrence rules. |
 | Legacy archive | Events up to the day the legacy client stopped | Frozen. |
 

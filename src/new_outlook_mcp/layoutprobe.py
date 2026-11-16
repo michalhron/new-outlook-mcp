@@ -16,6 +16,7 @@ import collections
 import json
 import re
 import sqlite3
+import struct
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
@@ -162,8 +163,8 @@ def _ref(cls: int) -> Check:
 def _pairs_message(tr: Truth, fs: int):
     rows = {}
     for mid, pk in tr.message_pk().items():
-        r = tr.row("SELECT subject, from_name, from_addr, message_id, date_ts, has_attachment, body_text, first_source"
-                   " FROM messages"
+        r = tr.row("SELECT subject, from_name, from_addr, message_id, date_ts, has_attachment, body_text, first_source,"
+                   " importance, flag_status, categories_json FROM messages"
                    " WHERE id = ?", pk)
         if r is not None:
             rows[mid] = r
@@ -194,7 +195,30 @@ def _message_fields(tr: Truth, fs: int):
         "sent": ([(o, r["date_ts"]) for o, r in hx_only if r["date_ts"]],
                  lambda o, off, t: abs(_ticks(o.u64(off)) - t) < 86400),
         "modified": ([(o, None) for o, _ in pairs], lambda o, off, t: 9.4e8 < _ticks(o.u64(off)) < 4.1e9),
+        # Most mail has normal importance, no flag and no category, so these usually come out
+        # ambiguous and are then placed by their neighbours or by hand.
+        "importance": ([(o, r["importance"]) for o, r in pairs if r["importance"]],
+                       lambda o, off, t: hx.IMPORTANCE.get(o.u32(off)) == t),
+        "flag_status": ([(o, r["flag_status"]) for o, r in pairs if r["flag_status"]],
+                        lambda o, off, t: hx.FLAG_STATUS.get(o.raw[off]) == t),
+        "categories": ([(o, json.loads(r["categories_json"])) for o, r in pairs if r["categories_json"]],
+                       lambda o, off, t: _categories_at(o, off) == t),
+        **{name: ([(o, None) for o, _ in pairs], _unset_or_date)
+           for name in ("flag_completed", "flag_start", "flag_due")},
     }
+
+
+def _unset_or_date(o, off, _t) -> bool:
+    v = o.u64(off)
+    return v == hx.TICKS_MAX or 9.4e8 < _ticks(v) < 4.1e9
+
+
+def _categories_at(o, off):
+    """The category list as the decoder would read it if the field sat at `off`."""
+    b = o.blob(off)
+    if not b:
+        return []
+    return hx.parse_counted_strings(b)
 
 
 def _account_fields(tr: Truth, fs: int):
@@ -260,6 +284,20 @@ def _attachment_fields(tr: Truth, fs: int):
     }
 
 
+#: Byte lengths a recurrence block can have (0 = absent). Lists of dates are multiples of 8.
+_REC_BLOCK_SIZES = {"rec_daily": (2,), "rec_until": (16,), "rec_monthly": (4,), "rec_monthly_rel": range(9, 16),
+                    "rec_no_end": (8,), "rec_count": (12,), "rec_weekly": range(8, 15), "rec_yearly": (6,),
+                    "rec_yearly_rel": range(11, 18), "rec_deleted": range(8, 4096, 8),
+                    "rec_modified": range(8, 4096, 8)}
+
+
+def _block_of(sizes):
+    def check(o, off, _t) -> bool:
+        start, ln = struct.unpack_from("<II", o.raw, off)
+        return (start, ln) == (0, 0) or (not ln >> 31 and ln in sizes and start + ln <= o.lead)
+    return check
+
+
 def _event_fields(tr: Truth, fs: int):
     rows = {r["uid"]: r for r in tr.conn.execute(
         "SELECT * FROM events WHERE first_source = 'hxstore' AND uid IS NOT NULL")}
@@ -290,6 +328,13 @@ def _event_fields(tr: Truth, fs: int):
                           need=lambda v: True),
         "attendees": col("subject", lambda o, off, t: bool(o.text(off)) and t.endswith(o.text(off))),
         "calendar": ([(o, calendars) for o, _ in pairs], lambda o, off, t: o.u64(off) in t),
+        # Recurrence: the two type bytes against "has a rule" in the archive, the blocks by their length.
+        "rec_type": col("rrule", lambda o, off, t: (o.raw[off] in hx.REC_PATTERN) if t else o.raw[off] == hx.REC_NONE[0],
+                        need=lambda v: True),
+        "rec_range": col("rrule", lambda o, off, t: (o.raw[off] in hx.REC_RANGE) if t else o.raw[off] == hx.REC_NONE[1],
+                         need=lambda v: True),
+        **{name: ([(o, None) for o, _ in pairs], _block_of(sizes))
+           for name, sizes in _REC_BLOCK_SIZES.items()},
     }
 
 
@@ -325,12 +370,16 @@ def _flag_labels(tr: Truth, cls: int, fs: int) -> dict[str, dict[int, bool]]:
     if cls == hx.C_MESSAGE:
         pk = tr.message_pk()
         objs = tr.newest(cls, fs)
-        has = {}
+        has, read = {}, {}
         for mid, p in pk.items():
-            r = tr.row("SELECT has_attachment, first_source FROM messages WHERE id = ?", p)
+            r = tr.row("SELECT has_attachment, first_source, is_read FROM messages WHERE id = ?", p)
             if mid in objs and r and r[1] == "hxstore":
                 has[mid] = bool(r[0])
-        return {"has_attachment_bit": has}
+                if r[2] is not None:
+                    read[mid] = bool(r[2])
+        # Read state changes in Outlook between syncs, so `read_bit` rarely agrees on every message
+        # and is then reported as ambiguous instead of guessed.
+        return {"has_attachment_bit": has, "read_bit": read}
     return {}
 
 
@@ -340,7 +389,10 @@ def _probe_bits(tr: Truth, cls: int, old_fs: int, new_fs: int) -> list[Finding]:
     out = []
     labels_by_bit = _flag_labels(tr, cls, new_fs)
     for name, labels in labels_by_bit.items():
-        old_byte, old_bit = ref["flags"], ref[name]
+        if name not in ref:
+            continue
+        byte_field = hx.BIT_BYTES.get(name, "flags")
+        old_byte, old_bit = ref[byte_field], ref[name]
         scores = []
         for off in _candidates(old_byte, new_fs - old_fs):
             for b in range(8):
@@ -351,7 +403,7 @@ def _probe_bits(tr: Truth, cls: int, old_fs: int, new_fs: int) -> list[Finding]:
         n = len(labels)
         positives = sum(labels.values())
         found = (n >= MIN_EVIDENCE and positives >= 2 and best == n and runner < n)
-        out.append(Finding(cls, f"flags / {name}", old_byte, off if found else None, best, n, runner,
+        out.append(Finding(cls, f"{byte_field} / {name}", old_byte, off if found else None, best, n, runner,
                            "found" if found else "ambiguous" if n else "no evidence",
                            f"bit {old_bit:#04x} -> {bit:#04x}" + ("" if found else f"; {positives} positive examples")))
     # A flag with too few examples of its own may move with a flag that was found: same byte, same bit shift.
@@ -359,6 +411,8 @@ def _probe_bits(tr: Truth, cls: int, old_fs: int, new_fs: int) -> list[Finding]:
     for f in out:
         if f.status != "found" and sure is not None:
             name, sname = f.field.split(" / ")[1], sure.field.split(" / ")[1]
+            if f.field.split(" / ")[0] != sure.field.split(" / ")[0]:
+                continue  # another byte: nothing says it moved the same way
             factor = int(sure.note.split("-> ")[1].split()[0], 16) / ref[sname]
             bit = int(ref[name] * factor)
             labels = labels_by_bit[name]
@@ -471,7 +525,7 @@ def probe_classes(objs, conn: sqlite3.Connection, mismatches: Iterable[tuple[int
         fields = hx.FIELDS[(cls, old_fs)]
         sources = FIELD_SOURCES[cls](tr, new_fs) if cls in FIELD_SOURCES else {}
         for name, old in fields.items():
-            if name in ("flags", "strings") or name.endswith("_bit"):
+            if name in ("flags", "strings") or name.endswith("_bit") or name in hx.BIT_BYTES.values():
                 continue
             if name not in sources:
                 res.findings.append(Finding(cls, name, old, None, 0, 0, 0, "not checked",
@@ -550,9 +604,10 @@ def proposal_python(rep: ProbeReport, build: str) -> str:
                 continue
             if f.status not in ("found", "derived"):
                 continue
-            if f.field.startswith("flags / "):
+            if " / " in f.field:
                 bit = int(f.note.split("-> ")[1].split(",")[0].split()[0], 16)
-                old["flags"], old[f.field.split(" / ")[1]] = f.new, bit
+                byte_field, bit_field = f.field.split(" / ")
+                old[byte_field], old[bit_field] = f.new, bit
             else:
                 old[f.field] = f.new
         body = ", ".join(f'"{k}": {_fmt(v)}' for k, v in old.items())

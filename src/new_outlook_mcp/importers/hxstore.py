@@ -19,7 +19,7 @@ from pathlib import Path
 from .. import mime, orphans
 from ..calendar_store import AttendeeInfo, EventRecord
 from ..ics import find_meeting_url
-from ..model import AttachmentInfo, MessageRecord, first_plausible
+from ..model import AttachmentInfo, MessageRecord, first_plausible, normalize_message_id
 from ..snapshot import SnapshotError
 from . import hxformat
 from .base import Importer
@@ -34,11 +34,21 @@ HFL_NAME = "hxcore.hfl"
 MAX_FAILED_RATIO = 0.02
 MIN_FAILED_BLOCKS = 5
 COPY_ATTEMPTS = 2
+#: Every event the server has stored carries a global object id in this form as its UID.
+SERVER_UID_PREFIX = "040000008200E00074C5B7101A82E008"
 RETRY_DELAY = 2.0
 
 
 def _too_torn(b: hxformat.BlockStats) -> bool:
     return b.failed >= MIN_FAILED_BLOCKS and b.failed_ratio > MAX_FAILED_RATIO
+
+
+#: When one Message-ID has copies in several folders, the archive shows the first of these.
+_SECONDARY_FOLDERS = {"sentitems": 1, "drafts": 2, "deleteditems": 3}
+
+
+def _folder_rank(m: hxformat.HxMessage) -> tuple[int, int]:
+    return _SECONDARY_FOLDERS.get(m.folder_type or "", 0), m.local_id
 
 
 def _fmt(name: str | None, addr: str | None) -> str | None:
@@ -144,13 +154,38 @@ class HxStoreImporter(Importer):
 
     def iter_records(self, snapshot: Path, *, skip_keys: set[str]) -> Iterator[MessageRecord]:
         store = self._store_for(snapshot)
-        for m in hxformat.iter_messages(store):
+        messages = list(hxformat.iter_messages(store))
+        # One Message-ID can sit in two folders (mail to yourself: Inbox and Sent Items), and the archive
+        # keeps one row for both. Every copy then reports the same live state, so the row does not
+        # depend on the order of the copies: unread while any copy is unread (the Sent Items copy is
+        # always read), and the folder, flag and categories of the received copy.
+        unread: set[str] = set()
+        home: dict[str, hxformat.HxMessage] = {}
+        for m in messages:
+            if not m.message_id:
+                continue
+            mid = normalize_message_id(m.message_id)
+            if not m.is_read:
+                unread.add(mid)
+            if mid not in home or _folder_rank(m) < _folder_rank(home[mid]):
+                home[mid] = m
+        for m in messages:
             self.stats.seen += 1
             if m.key in skip_keys:
                 self.stats.skipped += 1
                 continue
             try:
-                yield self._record(m)
+                rec = self._record(m)
+                if m.message_id:
+                    mid = normalize_message_id(m.message_id)
+                    if mid in unread:
+                        rec.is_read = False
+                    h = home[mid]
+                    if h is not m and h.account == m.account:
+                        rec.folder = h.folder or h.folder_type
+                        rec.flag_status, rec.flag_due, rec.flag_completed = h.flag_status, h.flag_due, h.flag_completed
+                        rec.categories = h.categories
+                yield rec
             except Exception as exc:
                 self.stats.errors += 1
                 log.warning("hxstore message %s failed: %s", m.local_id, exc)
@@ -162,6 +197,7 @@ class HxStoreImporter(Importer):
         rec.from_name, rec.from_addr = m.from_name, m.from_addr
         rec.to = [s for s in (_fmt(n, a) for n, a in m.to) if s]
         rec.cc = [s for s in (_fmt(n, a) for n, a in m.cc) if s]
+        rec.bcc = [s for s in (_fmt(n, a) for n, a in m.bcc) if s]
         # 2032-01-02 is a "no date" sentinel on some drafts and deleted items.
         rec.date = first_plausible(m.date_received, m.date_sent, m.last_modified)
         rec.folder = m.folder or m.folder_type
@@ -183,6 +219,14 @@ class HxStoreImporter(Importer):
             rec.body_text = m.preview
             self.stats.count("messages with preview text only")
         rec.has_attachment = m.has_attachment
+        rec.is_read = m.is_read
+        rec.importance = m.importance
+        rec.flag_status, rec.flag_due, rec.flag_completed = m.flag_status, m.flag_due, m.flag_completed
+        rec.categories = m.categories
+        if m.categories is None:
+            self.stats.count("messages with an unreadable category list")
+        if m.importance is None or m.flag_status is None:
+            self.stats.count("messages with an unknown importance or flag code")
         for a in m.attachments:
             path = self.resolve_ref(a.file_ref)
             if path is not None:
@@ -226,6 +270,11 @@ class HxStoreImporter(Importer):
                 # Seen on 16.113.4: stub objects without strings, some typed as series masters.
                 self.stats.count("empty event stubs skipped")
                 continue
+            if e.uid and not e.uid.upper().startswith(SERVER_UID_PREFIX):
+                # A new event keeps the UID it was created with until the server has stored it. Outlook then
+                # replaces the object (new id, server UID), so importing this one would leave a duplicate.
+                self.stats.count("events not yet stored on the server skipped (imported on a later sync)")
+                continue
             if e.recurrence_unparsed:
                 self.stats.count("recurring series with an unknown pattern (first occurrence only)")
             try:
@@ -252,6 +301,12 @@ class HxStoreImporter(Importer):
             rec.body_text = e.preview
         rec.online_meeting_url = e.online_meeting_url or find_meeting_url(e.location, rec.body_text)
         rec.rrule = e.rrule
+        if e.rrule:
+            day = (lambda t: t.date().isoformat()) if e.all_day else (lambda t: t.isoformat())
+            rec.exdates = [day(t) for t in e.deleted_occurrences]
+            if e.changed_occurrences:
+                # Where a changed occurrence went is not in the event object, so it stays at its original time.
+                self.stats.count("moved or edited occurrences shown at their original time", len(e.changed_occurrences))
         rec.my_response = e.my_response
         rec.busy_status = e.show_as
         rec.calendar = e.calendar

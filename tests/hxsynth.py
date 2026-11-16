@@ -25,6 +25,45 @@ def u16z(s: str) -> bytes:
     return s.encode("utf-16-le") + b"\0\0"
 
 
+def counted_strings(items) -> bytes:
+    """u32 count, then per string u8 byte length and UTF-16LE text (category lists)."""
+    out = struct.pack("<I", len(items))
+    for s in items:
+        b = s.encode("utf-16-le")
+        out += bytes([len(b)]) + b
+    return out
+
+
+DAY_CODE = {"SU": 0, "MO": 1, "TU": 2, "WE": 3, "TH": 4, "FR": 5, "SA": 6}
+
+
+def recurrence(kind: str, *, interval: int = 1, days=(), day: int = 0, month: int = 0, index: int = 0,
+               start: datetime, until: datetime | None = None, count: int | None = None) -> dict:
+    """Recurrence of a series master as the real store lays it out: type bytes, one pattern block, one range block.
+
+    `kind`: daily, weekly, monthly, monthly_rel, yearly, yearly_rel. `index`: 0 first .. 3 fourth, 4 last.
+    """
+    dl = struct.pack("<I", len(days)) + bytes(DAY_CODE[d] for d in days)
+    head = struct.pack("<H", interval)
+    block = {
+        "daily": head,
+        "weekly": head + dl + b"\x01",
+        "monthly": head + bytes([day, 1]),
+        "monthly_rel": head + dl + bytes([index, 1]),
+        "yearly": head + bytes([month, day, 1, 0]),
+        "yearly_rel": head + bytes([month]) + dl + bytes([index, 1, 0]),
+    }[kind]
+    first = struct.pack("<Q", ticks(start.replace(hour=0, minute=0)))
+    if until:
+        rng_type, rng_field, rng = 1, "rec_until", first + struct.pack("<Q", ticks(until))
+    elif count:
+        rng_type, rng_field, rng = 2, "rec_count", first + struct.pack("<I", count)
+    else:
+        rng_type, rng_field, rng = 0, "rec_no_end", first
+    types = {"daily": 1, "weekly": 2, "monthly": 3, "monthly_rel": 4, "yearly": 5, "yearly_rel": 6}
+    return {"type": types[kind], "range": rng_type, "blocks": {"rec_" + kind: block, rng_field: rng}}
+
+
 def lz4_literals(data: bytes) -> bytes:
     """A valid LZ4 block made of one literal run (no compression)."""
     n = len(data)
@@ -50,7 +89,8 @@ class ObjSpec:
     strings: dict[int, str] = field(default_factory=dict)  # rel -> UTF-16 text in string area
     blobs: dict[int, bytes] = field(default_factory=dict)  # rel -> raw bytes in string area
     area_one_strings: dict[int, str] = field(default_factory=dict)  # rel -> UTF-16 text in area one
-    area_one_raw: bytes = b""  # bytes at the start of area one (recurrence data)
+    area_one_raw: bytes = b""  # bytes at the start of area one
+    area_one_blobs: dict[int, bytes] = field(default_factory=dict)  # rel -> raw bytes in area one
     u32s: dict[int, int] = field(default_factory=dict)
     u64s: dict[int, int] = field(default_factory=dict)
     bytes_at: dict[int, int] = field(default_factory=dict)
@@ -64,6 +104,9 @@ class ObjSpec:
         area1 = bytearray(self.area_one_raw)
         for rel, s in self.area_one_strings.items():
             b = u16z(s)
+            struct.pack_into("<II", fixed, rel, len(area1), len(b))
+            area1 += b
+        for rel, b in self.area_one_blobs.items():
             struct.pack_into("<II", fixed, rel, len(area1), len(b))
             area1 += b
         strings = bytearray()
@@ -133,10 +176,13 @@ CALENDAR = 0x3001
 ME = "me@uni.example.edu"
 
 
-def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = hx.FS_16_114) -> list[ObjSpec]:
-    """Three messages, two attachments, three events. Files/ entries are created when with_files.
+def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = hx.FS_16_114,
+            extra_events=None) -> list[ObjSpec]:
+    """Three messages (m1 unread, flagged, high importance, two categories; the others read and plain),
+    two attachments, three events. Files/ entries are created when with_files.
 
     `sizes` picks the Outlook build's layout (hx.FS_16_113, hx.FS_16_114 or hx.FS_16_115).
+    `extra_events(event)` may return more events, built with the same `event(...)` helper.
     """
 
     def at(cls: int, field: str) -> int:
@@ -156,15 +202,27 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
 
         (e / "7.dat").write_bytes(gzip.compress(b"<html><body><p>A very long synthetic report.</p></body></html>"))
 
-    def msg(oid, *, subject, frm, mid, sent, received, folder, irt=None, preview="", has_att=False, stamp=1):
+    def msg(oid, *, subject, frm, mid, sent, received, folder, irt=None, preview="", has_att=False, stamp=1,
+            read=True, importance=1, flag=0, flag_due=None, categories=()):
         o = ObjSpec(hx.C_MESSAGE, oid, owner=MAIL_ACCOUNT, stamp=stamp,
                     strings={0x598: subject, 0x56C: frm[0], 0x574: frm[1], 0x4CC: mid, 0x4D4: "IPM.Note",
                              0x518: preview},
                     u64s={0x2D8: ticks(sent), 0x120: ticks(received)},
                     refs={0x382: (hx.C_FOLDER, folder)},
-                    bytes_at={0x5E6: 0x40 if has_att else 0})
+                    bytes_at={0x5E6: 0x40 if has_att else 0,
+                              # 0x80 marks an Inbox message on real stores; it must not be taken for the read bit.
+                              at(hx.C_MESSAGE, "state"): (at(hx.C_MESSAGE, "read_bit") if read else 0)
+                              | (0x80 if folder == INBOX else 0)})
         if irt:
             o.strings[0x4BC] = irt
+        m = lambda field: at(hx.C_MESSAGE, field)  # noqa: E731
+        o.u32s[m("importance")] = importance
+        o.bytes_at[m("flag_status")] = flag
+        # Unset dates hold DateTime.MaxValue, as on real stores.
+        o.u64s.update({m("flag_completed"): hx.TICKS_MAX, m("flag_start"): hx.TICKS_MAX,
+                       m("flag_due"): ticks(flag_due) if flag_due else hx.TICKS_MAX})
+        if categories:
+            o.blobs[m("categories")] = counted_strings(categories)
         # 51-byte stable id blob (real ones start 00 09 00 2e)
         o.blobs[0x58C] = b"\x00\x09\x00\x2e" + oid.to_bytes(8, "little") * 5 + b"\x00\x00\x00"
         return o
@@ -182,7 +240,9 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         # m1: inbox message with a cached PDF, an inline logo, and a missing attachment.
         msg(0x5001, subject="Workshop agenda", frm=("Hana Synth", "hana@example.org"), mid="<hx-1@example.org>",
             sent=datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc),
-            received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True),
+            received=datetime(2026, 9, 1, 8, 0, 5, tzinfo=timezone.utc), folder=INBOX, has_att=True, read=False,
+            importance=2, flag=2, flag_due=datetime(2026, 9, 4, tzinfo=timezone.utc),
+            categories=("Blue category", "Teaching")),
         ObjSpec(hx.C_BODY, 0x5001, fs=body_fs,
                 blobs={at(hx.C_BODY, "html"): b"<html><body><p>Agenda attached. Coffee at ten.</p></body></html>"}),
         rcpt(0x6001, 0x5001, 0xCC, "Me", ME),
@@ -205,6 +265,7 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         ObjSpec(hx.C_BODY, 0x5002, fs=body_fs, refs={at(hx.C_BODY, "file"): (hx.C_FILE, 0x8001)}),
         ObjSpec(hx.C_FILE, 0x8001, strings={0x88: body_ref}),
         rcpt(0x6004, 0x5002, 0xCC, "Hana Synth", "hana@example.org"),
+        rcpt(0x6005, 0x5002, 0xCE, "Olga Synth", "olga@example.net"),  # Bcc: only the Sent Items copy has it
         # m3: only a preview (body not cached), two copies: the newer one has the moved folder.
         msg(0x5003, subject="Old subject", frm=("Jan Synth", "jan@example.com"), mid="<hx-3@example.com>",
             sent=datetime(2026, 8, 20, tzinfo=timezone.utc), received=datetime(2026, 8, 20, tzinfo=timezone.utc),
@@ -217,18 +278,24 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
     ]
 
     def event(oid, *, uid, subject, start, end, tz="Europe/Prague", all_day=False, cancelled=False, etype=0,
-              show_as=2, response=0, organizer=("Hana Synth", "hana@example.org"), attendees=(), area_one=b"",
-              detail=None, location=None):
+              show_as=2, response=0, organizer=("Hana Synth", "hana@example.org"), attendees=(), rec=None,
+              deleted=(), changed=(), detail=None, location=None):
         ev = lambda field: at(hx.C_EVENT, field)  # noqa: E731
         anchor = ev("attendees")
         flags = (ev("all_day_bit") if all_day else 0) | (ev("cancelled_bit") if cancelled else 0)
-        o = ObjSpec(hx.C_EVENT, oid, owner=CALENDAR, fs=sizes[hx.C_EVENT], area_one_raw=area_one,
+        o = ObjSpec(hx.C_EVENT, oid, owner=CALENDAR, fs=sizes[hx.C_EVENT],
                     strings={ev("subject"): subject, ev("org_name"): organizer[0], ev("org_addr"): organizer[1],
                              anchor: subject},
                     area_one_strings={ev("uid"): uid, ev("tz"): tz},
                     u64s={0x248: ticks(start), 0x250: ticks(end), 0xE0: CALENDAR},
                     u32s={ev("event_type"): etype, ev("show_as"): show_as, ev("response"): response},
-                    bytes_at={ev("flags"): flags})
+                    bytes_at={ev("flags"): flags, ev("rec_type"): 8, ev("rec_range"): 3})
+        if rec:
+            o.bytes_at.update({ev("rec_type"): rec["type"], ev("rec_range"): rec["range"]})
+            o.area_one_blobs.update({ev(name): b for name, b in rec["blocks"].items()})
+            for name, times in (("rec_deleted", deleted), ("rec_modified", changed)):
+                if times:
+                    o.area_one_blobs[ev(name)] = b"".join(struct.pack("<Q", ticks(t)) for t in times)
         if location:
             o.strings[ev("location")] = location
         recs = struct.pack("<I", len(attendees))
@@ -242,9 +309,8 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
             o.u64s[0xB4] = detail
         return o
 
-    weekly = (struct.pack("<Q", ticks(datetime(2026, 9, 7, 7, tzinfo=timezone.utc)))
-              + struct.pack("<Q", ticks(datetime(2026, 10, 5, tzinfo=timezone.utc)))
-              + b"\x01\x00" + struct.pack("<I", 1) + bytes([1]) + b"\x00" * 9)
+    weekly = recurrence("weekly", days=["MO"], start=datetime(2026, 9, 7, tzinfo=timezone.utc),
+                        until=datetime(2026, 10, 5, tzinfo=timezone.utc))
     objs += [
         event(0x9001, uid="040000008200E00074C5B7101A82E008000000001111", subject="Workshop",
               start=datetime(2026, 9, 3, 8, tzinfo=timezone.utc), end=datetime(2026, 9, 3, 10, tzinfo=timezone.utc),
@@ -254,11 +320,13 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
                 strings={0x2BC: "https://teams.microsoft.com/l/meetup-join/synthetic"}),
         event(0x9002, uid="040000008200E00074C5B7101A82E008000000002222", subject="Lab meeting",
               start=datetime(2026, 9, 7, 7, tzinfo=timezone.utc), end=datetime(2026, 9, 7, 8, tzinfo=timezone.utc),
-              etype=3, response=3, organizer=("Me", ME), area_one=weekly),
+              etype=3, response=3, organizer=("Me", ME), rec=weekly),
         event(0x9003, uid="040000008200E00074C5B7101A82E008000000003333", subject="Holiday",
               start=datetime(2026, 9, 10, tzinfo=timezone.utc), end=datetime(2026, 9, 11, tzinfo=timezone.utc),
               all_day=True, show_as=0),
         event(0x9004, uid="", subject="", start=datetime(2026, 9, 12, tzinfo=timezone.utc),
               end=datetime(2026, 9, 12, tzinfo=timezone.utc)),
     ]
+    if extra_events:
+        objs += extra_events(event)
     return objs

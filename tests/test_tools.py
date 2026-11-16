@@ -44,6 +44,16 @@ def test_search_filters(loaded):
         tools.search_emails(loaded, None, date_from="March")
 
 
+def test_unread_filter_skips_messages_with_unknown_read_state(loaded):
+    total = tools.search_emails(loaded, None)["total"]
+    loaded.conn.execute("UPDATE messages SET is_read = NULL WHERE id = (SELECT MIN(id) FROM messages)")
+    unread = tools.search_emails(loaded, None, unread=True)["total"]
+    read = tools.search_emails(loaded, None, unread=False)["total"]
+    assert unread + read == total - 1
+    first = tools.get_email(loaded, str(loaded.conn.execute("SELECT MIN(id) FROM messages").fetchone()[0]))
+    assert first["is_read"] is None
+
+
 def test_search_like_wildcards_are_literal(loaded):
     assert tools.search_emails(loaded, None, from_="%")["total"] == 0
 

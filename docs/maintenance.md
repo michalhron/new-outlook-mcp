@@ -3,8 +3,12 @@
 ## Known limitations
 
 - The archive only sees what Outlook keeps on this Mac. New Outlook caches about the last two months densely, plus older items you opened or searched for. Search for old mail in Outlook to bring it into the cache.
-- Read state, flags and Bcc on New Outlook mail are not decoded yet.
-- Recurring events in New Outlook are decoded for weekly patterns only. Other patterns show their first occurrence. A published ICS feed has full recurrence ([calendar.md](calendar.md)).
+- Read state, folder, flag and categories of New Outlook mail are the state at the last sync. Once a message has left Outlook's cache, the archive keeps the last state it saw: a later move, or a deletion, is not noticed. Drafts usually count as unread.
+- A message with copies in two folders (mail to yourself) is one archive row, shown in the folder of the received copy.
+- Flag, importance and categories are known for mail seen in New Outlook's cache only, not for mail that exists only in the legacy archive.
+- Bcc recipients are known only for mail you sent, from its Sent Items copy.
+- Recurring events in New Outlook: every repeat pattern and deleted occurrences are decoded. An occurrence that was moved or edited still shows at its original time, because the cache does not hold where it went. A published ICS feed has those too ([calendar.md](calendar.md)).
+- An event you just created appears after the sync that follows Outlook saving it to the server.
 - Orphan files carry the date of the file and have no sender or folder.
 - Free/busy covers only your own calendar.
 - `hxcore.hfl`, New Outlook's journal, is copied but not parsed. Very recent changes may live only there until Outlook writes them into `HxStore.hxd`.

@@ -62,6 +62,12 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         date_to: Annotated[str | None, Field(description="Latest date, inclusive, YYYY-MM-DD or ISO 8601 (UTC)")] = None,
         has_attachment: bool | None = None,
         attachment_name: Annotated[str | None, Field(description="An attachment file name contains this text")] = None,
+        unread: Annotated[bool | None, Field(
+            description="true: only unread mail, false: only read mail. Messages whose read state is unknown match neither")] = None,
+        flagged: Annotated[bool | None, Field(
+            description="true: only mail with an open follow-up flag. false: only mail without one (a completed flag counts as not flagged)")] = None,
+        importance: Literal["low", "normal", "high"] | None = None,
+        category: Annotated[str | None, Field(description="A category name contains this text")] = None,
         sort: Literal["relevance", "date_desc", "date_asc"] = "relevance",
         limit: Annotated[int, Field(ge=1, le=200)] = 20,
         offset: Annotated[int, Field(ge=0)] = 0,
@@ -77,7 +83,8 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         synced = sync(archive(), ["hxstore"]) if sync_first else None
         out = call(tools.search_emails, query, from_=sender, to=recipient, folder=folder, account=account,
                    date_from=date_from, date_to=date_to, has_attachment=has_attachment,
-                   attachment_name=attachment_name, sort=sort, limit=limit, offset=offset, mode=mode)
+                   attachment_name=attachment_name, unread=unread, flagged=flagged, importance=importance,
+                   category=category, sort=sort, limit=limit, offset=offset, mode=mode)
         if synced is not None:
             out["sync_first"] = [{"source": r.source, "status": r.status, "new": r.inserted,
                                   "message": r.message[:300]} for r in synced]
@@ -120,7 +127,9 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         max_chars: Annotated[int, Field(ge=100, le=100000)] = tools.DEFAULT_BODY_CHARS,
         include_headers: bool = False,
     ) -> dict:
-        """Get one email: metadata, attachment list and plain-text body (paged with offset)."""
+        """Get one email: metadata, attachment list and plain-text body (paged with offset). `is_read`,
+        `flag` (none, flagged, complete), `importance` and `categories` are the state at the last sync, or
+        null when unknown."""
         return call(tools.get_email, email_id, offset=offset, max_chars=max_chars, include_headers=include_headers)
 
     @server.tool(annotations=READ_ONLY)
@@ -141,9 +150,15 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         folder: str | None = None,
         account: str | None = None,
         days: Annotated[int | None, Field(ge=1, description="Only messages from the last N days")] = None,
+        unread: Annotated[bool | None, Field(
+            description="true: only unread mail, false: only read mail. Messages whose read state is unknown match neither")] = None,
+        flagged: Annotated[bool | None, Field(
+            description="true: only mail with an open follow-up flag. false: only mail without one (a completed flag counts as not flagged)")] = None,
     ) -> dict:
-        """List the newest archived emails. `freshness` and `warning` work as in search_emails."""
-        return call(tools.list_recent, limit=limit, folder=folder, account=account, days=days)
+        """List the newest archived emails. `is_read` is the state at the last sync. `freshness` and `warning`
+        work as in search_emails."""
+        return call(tools.list_recent, limit=limit, folder=folder, account=account, days=days, unread=unread,
+                    flagged=flagged)
 
     @server.tool(annotations=READ_ONLY)
     def list_attachments(

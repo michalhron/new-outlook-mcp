@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from hxsynth import ME, SENT, ObjSpec, mailbox, write_store
+from hxsynth import ME, SENT, ObjSpec, mailbox, recurrence, write_store
 
 from new_outlook_mcp import caltools, tools
 from new_outlook_mcp.importers import hxformat
@@ -288,3 +288,358 @@ def test_16_115_flag_bits_are_not_read_with_the_old_bit(tmp_path):
     hol = {e.local_id: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}[0x9003]
     assert hol.all_day and not hol.is_cancelled
     assert hxformat.FIELDS[(hxformat.C_EVENT, 0x459)]["all_day_bit"] == 0x10
+
+
+# ------------------------------------------------------------------ read state
+
+def _set_read(objs, oid, read: bool):
+    off = hxformat.FIELDS[(hxformat.C_MESSAGE, 0x60F)]["state"]
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == oid:
+            o.bytes_at[off] = (o.bytes_at[off] & ~0x02) | (0x02 if read else 0)
+
+
+def test_read_state_imported_and_filtered(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    assert tools.get_email(archive, "hx-1@example.org")["is_read"] is False
+    assert tools.get_email(archive, "hx-2@uni.example.edu")["is_read"] is True
+    unread = tools.search_emails(archive, None, unread=True)
+    assert [r["subject"] for r in unread["results"]] == ["Workshop agenda"] and unread["results"][0]["is_read"] is False
+    assert tools.search_emails(archive, None, unread=False)["total"] == 2
+    assert [r["subject"] for r in tools.list_recent(archive, unread=True)["results"]] == ["Workshop agenda"]
+
+
+def test_read_state_follows_the_cache_on_the_next_sync(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    objs = mailbox(profile)
+    _set_read(objs, 0x5001, True)   # opened in Outlook
+    _set_read(objs, 0x5002, False)  # marked unread again
+    write_store(profile / "HxStore.hxd", objs)
+    _sync(archive, profile, tmp_path)
+    assert tools.get_email(archive, "hx-1@example.org")["is_read"] is True
+    assert tools.get_email(archive, "hx-2@uni.example.edu")["is_read"] is False
+    assert tools.search_emails(archive, None, unread=True)["total"] == 1
+
+
+@pytest.mark.parametrize("sent_copy_first", [True, False])
+def test_unread_wins_when_a_message_sits_in_two_folders(archive, tmp_path, sent_copy_first):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    m1 = next(o for o in objs if o.cls == hxformat.C_MESSAGE and o.oid == 0x5001)
+    off = hxformat.FIELDS[(hxformat.C_MESSAGE, 0x60F)]["state"]
+    # Mail to myself: the Sent Items copy has the same Message-ID and is always read.
+    F = hxformat.FIELDS[(hxformat.C_MESSAGE, 0x60F)]
+    twin = ObjSpec(hxformat.C_MESSAGE, 0x5009, owner=m1.owner, strings=dict(m1.strings), blobs={
+        0x58C: b"\x00\x09\x00\x2e" + (0x5009).to_bytes(8, "little") * 5 + b"\x00\x00\x00"},
+        u64s=dict(m1.u64s) | {F["flag_due"]: hxformat.TICKS_MAX}, u32s={F["importance"]: 2},
+        refs={0x382: (hxformat.C_FOLDER, SENT)}, bytes_at={off: 0x02, F["flag_status"]: 0})
+    i = objs.index(m1)
+    objs.insert(i if sent_copy_first else i + 1, twin)
+    write_store(p / "HxStore.hxd", objs)
+    run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert tools.get_email(archive, "hx-1@example.org")["is_read"] is False
+    assert tools.get_email(archive, "hx-1@example.org")["folder"] == "Inbox"  # the received copy, in either order
+    m1 = tools.get_email(archive, "hx-1@example.org")  # flag and categories of the received copy too
+    assert m1["flag"] == "flagged" and m1["categories"] == ["Blue category", "Teaching"] and "flag_due" in m1
+
+
+def test_inbox_marker_bit_is_not_the_read_bit(tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    write_store(p / "HxStore.hxd", mailbox(p))
+    by = {m.local_id: m for m in hxformat.iter_messages(hxformat.Store(p / "HxStore.hxd"))}
+    assert by[0x5001].is_read is False  # state byte 0x80: in the Inbox, unread
+    assert by[0x5003].is_read is True   # state byte 0x82
+
+
+def test_cache_read_state_replaces_the_legacy_one(loaded, tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == 0x5001:
+            o.strings[0x4CC] = "<alpha-1@example.org>"
+    before = tools.get_email(loaded, "alpha-1@example.org")["is_read"]
+    assert before is not None
+    _set_read(objs, 0x5001, not before)
+    write_store(p / "HxStore.hxd", objs)
+    run_import(loaded, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert tools.get_email(loaded, "alpha-1@example.org")["is_read"] is (not before)
+
+
+# ------------------------------------------------------------- folder moves
+
+def _move(objs, oid, folder):
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == oid:
+            o.refs[0x382] = (hxformat.C_FOLDER, folder)
+
+
+def test_folder_follows_the_cache_on_the_next_sync(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    assert tools.get_email(archive, "hx-1@example.org")["folder"] == "Inbox"
+    objs = mailbox(profile)
+    _move(objs, 0x5001, SENT)
+    write_store(profile / "HxStore.hxd", objs)
+    _sync(archive, profile, tmp_path)
+    m1 = tools.get_email(archive, "hx-1@example.org")
+    assert m1["folder"] == "Sent Items" and m1["account"] == ME
+    assert tools.search_emails(archive, None, folder="Inbox")["total"] == 1  # only m3 is left there
+
+
+def test_cache_folder_replaces_the_legacy_one_and_keeps_the_account(loaded, tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    for o in objs:
+        if o.cls == hxformat.C_MESSAGE and o.oid == 0x5001:
+            o.strings[0x4CC] = "<alpha-1@example.org>"
+    _move(objs, 0x5001, SENT)
+    before = tools.get_email(loaded, "alpha-1@example.org")
+    assert before["folder"] != "Sent Items"
+    write_store(p / "HxStore.hxd", objs)
+    run_import(loaded, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    after = tools.get_email(loaded, "alpha-1@example.org")
+    assert after["folder"] == "Sent Items" and after["account"] == before["account"]
+    # The folder row belongs to the message's own account.
+    assert loaded.conn.execute(
+        "SELECT COUNT(*) FROM messages m JOIN folders f ON f.id = m.folder_id"
+        " WHERE IFNULL(f.account_id, -1) != IFNULL(m.account_id, -1)").fetchone()[0] == 0
+
+
+def test_a_source_that_is_not_live_does_not_move_a_message(archive, profile, tmp_path):
+    from new_outlook_mcp.model import MessageRecord
+
+    _sync(archive, profile, tmp_path)
+    with archive.transaction():
+        archive.upsert(MessageRecord(source="legacy", source_key="k1", message_id="<hx-1@example.org>",
+                                     folder="Old Folder", account=ME, is_read=True))
+    m1 = tools.get_email(archive, "hx-1@example.org")
+    assert m1["folder"] == "Inbox" and m1["is_read"] is False
+
+
+# ------------------------------------------- flag, importance, categories
+
+M = hxformat.FIELDS[(hxformat.C_MESSAGE, 0x60F)]
+
+
+def _message(objs, oid):
+    return next(o for o in objs if o.cls == hxformat.C_MESSAGE and o.oid == oid)
+
+
+def test_flag_importance_and_categories_imported(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    m1 = tools.get_email(archive, "hx-1@example.org")
+    assert (m1["flag"], m1["importance"], m1["categories"]) == ("flagged", "high", ["Blue category", "Teaching"])
+    assert m1["flag_due"] == "2026-09-04T00:00:00+00:00" and "flag_completed" not in m1
+    m2 = tools.get_email(archive, "hx-2@uni.example.edu")
+    assert (m2["flag"], m2["importance"], m2["categories"]) == ("none", "normal", [])
+    assert "flag_due" not in m2
+
+
+def test_flag_importance_and_category_filters(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    flagged = tools.search_emails(archive, None, flagged=True)["results"]
+    assert [r["subject"] for r in flagged] == ["Workshop agenda"]
+    assert flagged[0]["flag"] == "flagged" and flagged[0]["importance"] == "high"
+    assert flagged[0]["categories"] == ["Blue category", "Teaching"]
+    assert tools.search_emails(archive, None, flagged=False)["total"] == 2
+    assert tools.search_emails(archive, None, importance="high")["total"] == 1
+    assert tools.search_emails(archive, None, importance="normal")["total"] == 2
+    assert tools.search_emails(archive, None, category="teach")["total"] == 1
+    assert tools.search_emails(archive, None, category="blue cat")["total"] == 1
+    assert tools.search_emails(archive, None, category="red")["total"] == 0
+    assert tools.list_recent(archive, flagged=True)["total"] == 1
+    plain = tools.search_emails(archive, None, flagged=False)["results"][0]
+    assert not {"flag", "importance", "categories"} & set(plain)  # summaries only show what stands out
+    with pytest.raises(tools.ToolInputError):
+        tools.search_emails(archive, None, importance="urgent")
+
+
+def test_flag_and_categories_follow_the_cache(archive, profile, tmp_path):
+    from datetime import datetime, timezone
+
+    from hxsynth import ticks
+
+    _sync(archive, profile, tmp_path)
+    objs = mailbox(profile)
+    m1 = _message(objs, 0x5001)
+    m1.bytes_at[M["flag_status"]] = 1  # completed: due date cleared, completion date set
+    m1.u64s[M["flag_due"]] = hxformat.TICKS_MAX
+    m1.u64s[M["flag_completed"]] = ticks(datetime(2026, 9, 5, tzinfo=timezone.utc))
+    del m1.blobs[M["categories"]]
+    write_store(profile / "HxStore.hxd", objs)
+    _sync(archive, profile, tmp_path)
+    got = tools.get_email(archive, "hx-1@example.org")
+    assert got["flag"] == "complete" and got["categories"] == [] and "flag_due" not in got
+    assert got["flag_completed"] == "2026-09-05T00:00:00+00:00"
+    assert tools.search_emails(archive, None, flagged=True)["total"] == 0
+    assert tools.search_emails(archive, None, flagged=False)["total"] == 3
+
+    m1.bytes_at[M["flag_status"]] = 0  # flag cleared
+    m1.u64s[M["flag_completed"]] = hxformat.TICKS_MAX
+    write_store(profile / "HxStore.hxd", objs)
+    _sync(archive, profile, tmp_path)
+    got = tools.get_email(archive, "hx-1@example.org")
+    assert got["flag"] == "none" and "flag_completed" not in got
+
+
+def test_unknown_codes_and_broken_category_lists_are_not_guessed(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    objs = mailbox(profile)
+    m1 = _message(objs, 0x5001)
+    m1.u32s[M["importance"]] = 7
+    m1.bytes_at[M["flag_status"]] = 9
+    m1.blobs[M["categories"]] = m1.blobs[M["categories"]][:-3]  # cut short
+    write_store(profile / "HxStore.hxd", objs)
+    by = {m.local_id: m for m in hxformat.iter_messages(hxformat.Store(profile / "HxStore.hxd"))}
+    assert (by[0x5001].importance, by[0x5001].flag_status, by[0x5001].categories) == (None, None, None)
+    res = _sync(archive, profile, tmp_path)
+    assert "unknown importance or flag code: 1" in res.message and "unreadable category list: 1" in res.message
+    # What the archive knew stays.
+    got = tools.get_email(archive, "hx-1@example.org")
+    assert (got["flag"], got["importance"], got["categories"]) == ("flagged", "high", ["Blue category", "Teaching"])
+
+
+def test_counted_strings_must_fit_exactly():
+    from hxsynth import counted_strings
+
+    good = counted_strings(["A", "Bé"])
+    assert hxformat.parse_counted_strings(good) == ["A", "Bé"]
+    assert hxformat.parse_counted_strings(counted_strings([])) == []
+    for bad in (good[:-1], good + b"\0", b"\x02\x00\x00\x00\x02A\x00", b"\x01\x00", b"\xff\xff\xff\xff"):
+        assert hxformat.parse_counted_strings(bad) is None
+
+
+def test_legacy_message_gets_flag_state_from_the_cache(loaded, tmp_path):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    _message(objs, 0x5001).strings[0x4CC] = "<alpha-1@example.org>"
+    assert tools.get_email(loaded, "alpha-1@example.org")["flag"] is None  # the legacy importer does not say
+    write_store(p / "HxStore.hxd", objs)
+    run_import(loaded, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    got = tools.get_email(loaded, "alpha-1@example.org")
+    assert (got["flag"], got["importance"]) == ("flagged", "high")
+    assert tools.search_emails(loaded, None, flagged=False)["total"] == 2  # legacy-only mail matches neither
+
+
+# ---------------------------------------------------------------------- Bcc
+
+def test_bcc_comes_from_the_sent_items_copy(archive, profile, tmp_path):
+    _sync(archive, profile, tmp_path)
+    m2 = tools.get_email(archive, "hx-2@uni.example.edu")
+    assert m2["bcc"] == ["Olga Synth <olga@example.net>"] and m2["to"] == ["Hana Synth <hana@example.org>"]
+    assert tools.get_email(archive, "hx-1@example.org")["bcc"] == []
+    assert tools.search_emails(archive, None, to="olga@")["total"] == 1
+
+
+@pytest.mark.parametrize("sent_copy_first", [True, False])
+def test_bcc_survives_the_merge_with_the_received_copy(archive, tmp_path, sent_copy_first):
+    p = tmp_path / "Main Profile"
+    p.mkdir()
+    objs = mailbox(p)
+    m2 = _message(objs, 0x5002)
+    # The same mail also arrived in my Inbox (I was in To). That copy has no Bcc recipient.
+    twin = ObjSpec(hxformat.C_MESSAGE, 0x500A, owner=m2.owner, strings=dict(m2.strings), blobs={
+        0x58C: b"\x00\x09\x00\x2e" + (0x500A).to_bytes(8, "little") * 5 + b"\x00\x00\x00"},
+        u64s=dict(m2.u64s), u32s=dict(m2.u32s), refs={0x382: (hxformat.C_FOLDER, 0x2001)}, bytes_at=dict(m2.bytes_at))
+    to = ObjSpec(hxformat.C_RECIPIENT, 0x600A, owner=0x500A, kind=0xCC,
+                 strings={0x124: "Hana Synth", 0x12C: "hana@example.org"})
+    i = objs.index(m2)
+    objs[i:i] = [twin, to] if not sent_copy_first else []
+    if sent_copy_first:
+        objs += [twin, to]
+    write_store(p / "HxStore.hxd", objs)
+    run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    got = tools.get_email(archive, "hx-2@uni.example.edu")
+    assert got["bcc"] == ["Olga Synth <olga@example.net>"] and got["folder"] == "Inbox"
+
+
+# -------------------------------------------------------------- recurrence
+
+def _utc(*a):
+    from datetime import datetime, timezone
+    return datetime(*a, tzinfo=timezone.utc)
+
+
+S = _utc(2026, 11, 16, 10)  # a Monday
+PATTERNS = [
+    (dict(kind="daily", interval=2, until=_utc(2026, 12, 7)), "FREQ=DAILY;INTERVAL=2;UNTIL=20261207"),
+    (dict(kind="daily", count=5), "FREQ=DAILY;INTERVAL=1;COUNT=5"),
+    (dict(kind="weekly", days=["MO", "WE", "FR"]), "FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,WE,FR;WKST=MO"),
+    (dict(kind="weekly", interval=2, days=["SA", "SU"], until=_utc(2027, 1, 31)),
+     "FREQ=WEEKLY;INTERVAL=2;BYDAY=SA,SU;WKST=MO;UNTIL=20270131"),
+    (dict(kind="monthly", interval=3, day=28), "FREQ=MONTHLY;INTERVAL=3;BYMONTHDAY=28"),
+    (dict(kind="monthly_rel", days=["TU"], index=1), "FREQ=MONTHLY;INTERVAL=1;BYDAY=2TU"),
+    (dict(kind="monthly_rel", interval=2, days=["MO"], index=0), "FREQ=MONTHLY;INTERVAL=2;BYDAY=1MO"),
+    (dict(kind="monthly_rel", days=["FR"], index=4, count=4), "FREQ=MONTHLY;INTERVAL=1;BYDAY=-1FR;COUNT=4"),
+    (dict(kind="monthly_rel", days=["MO", "TU", "WE", "TH", "FR"], index=4),
+     "FREQ=MONTHLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;BYSETPOS=-1"),
+    (dict(kind="yearly", month=11, day=20), "FREQ=YEARLY;INTERVAL=1;BYMONTH=11;BYMONTHDAY=20"),
+    (dict(kind="yearly", interval=2, month=6, day=5), "FREQ=YEARLY;INTERVAL=2;BYMONTH=6;BYMONTHDAY=5"),
+    (dict(kind="yearly_rel", month=3, days=["TH"], index=2), "FREQ=YEARLY;INTERVAL=1;BYMONTH=3;BYDAY=3TH"),
+]
+
+
+def _series_store(tmp_path, sizes, make):
+    p = tmp_path / "Main Profile"
+    p.mkdir(exist_ok=True)
+    write_store(p / "HxStore.hxd", mailbox(p, sizes=sizes, extra_events=make))
+    return p
+
+
+@pytest.mark.parametrize("sizes", [hxformat.FS_16_114, hxformat.FS_16_115], ids=["16.114.3", "16.115"])
+def test_every_recurrence_pattern_becomes_its_rrule(tmp_path, sizes):
+    def make(event):
+        return [event(0xA000 + i, uid=f"040000008200E00074C5B7101A82E0080000000{i:04d}", subject=f"Series {i}",
+                      start=S, end=_utc(2026, 11, 16, 11), etype=3, rec=recurrence(start=S, **spec))
+                for i, (spec, _) in enumerate(PATTERNS)]
+
+    p = _series_store(tmp_path, sizes, make)
+    got = {e.subject: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}
+    for i, (_, rule) in enumerate(PATTERNS):
+        assert got[f"Series {i}"].rrule == rule and not got[f"Series {i}"].recurrence_unparsed
+
+
+def test_deleted_occurrence_is_left_out_and_a_moved_one_is_reported(archive, tmp_path):
+    def make(event):
+        return [event(0xA100, uid="040000008200E00074C5B7101A82E0080000000A100", subject="Three a week", start=S,
+                      end=_utc(2026, 11, 16, 11), etype=3, tz="UTC",
+                      rec=recurrence("weekly", days=["MO", "WE", "FR"], start=S, count=6),
+                      deleted=[_utc(2026, 11, 18, 10)], changed=[_utc(2026, 11, 20, 10)])]
+
+    p = _series_store(tmp_path, hxformat.FS_16_115, make)
+    res = run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert "moved or edited occurrences shown at their original time: 1" in res.message
+    evs = caltools.list_calendar_events(archive, "2026-11-16", "2026-11-30", timezone_name="UTC")["events"]
+    days = [e["start"][:10] for e in evs if e["subject"] == "Three a week"]
+    assert days == ["2026-11-16", "2026-11-20", "2026-11-23", "2026-11-25", "2026-11-27"]  # no 18th; 6 minus 1
+
+
+def test_recurrence_that_does_not_fit_is_not_guessed(tmp_path):
+    def make(event):
+        good = recurrence("weekly", days=["MO"], start=S)
+        cut = dict(good, blocks={k: (v[:-1] if k == "rec_weekly" else v) for k, v in good["blocks"].items()})
+        unknown_type = dict(good, type=7)
+        wrong_block = dict(recurrence("monthly", day=15, start=S), type=2)  # type says weekly, block is monthly
+        return [event(0xA200 + i, uid=f"040000008200E00074C5B7101A82E008000000A20{i}", subject=f"Odd {i}", start=S,
+                      end=_utc(2026, 11, 16, 11), etype=3, rec=r) for i, r in enumerate([cut, unknown_type, wrong_block])]
+
+    p = _series_store(tmp_path, hxformat.FS_16_115, make)
+    got = {e.subject: e for e in hxformat.iter_events(hxformat.Store(p / "HxStore.hxd"))}
+    for i in range(3):
+        assert got[f"Odd {i}"].rrule is None and got[f"Odd {i}"].recurrence_unparsed
+
+
+def test_event_not_yet_stored_on_the_server_is_skipped(archive, tmp_path):
+    def make(event):
+        return [event(0xA300, uid="1f0c2f1e-synthetic@new-outlook-mcp.local", subject="Just created", start=S,
+                      end=_utc(2026, 11, 16, 11))]
+
+    p = _series_store(tmp_path, hxformat.FS_16_115, make)
+    res = run_import(archive, HxStoreImporter(p / "HxStore.hxd"), snapshot_base=tmp_path / "s")
+    assert "events not yet stored on the server skipped (imported on a later sync): 1" in res.message
+    evs = caltools.list_calendar_events(archive, "2026-11-16", "2026-11-17", timezone_name="UTC")["events"]
+    assert "Just created" not in [e["subject"] for e in evs]

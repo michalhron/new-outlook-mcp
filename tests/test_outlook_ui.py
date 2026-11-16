@@ -54,7 +54,8 @@ def test_script_only_sends_the_documented_events():
     s = outlook_ui.SEARCH_SCRIPT
     # Keys: Cmd-A and the query into the search field, then Return. Nothing else is typed or pressed.
     assert s.count("se.keystroke(") == 2 and s.count("se.keyCode(") == 1 and "se.keyCode(36)" in s
-    assert ".click()" in s and s.count(".click()") == 1  # the Edit > Find > Outlook Items Search menu item
+    # Two menu items are clicked: View > Go To > Mail, and Edit > Find > Outlook Items Search.
+    assert s.count(".click()") == 2 and 'menuItems.byName("Mail").click()' in s
     for word in ("Archive", "Delete", "Mark as", "send", "AXPress", "perform", "actions"):
         assert word not in s, word
     # Every key press and wheel event is behind a front-app check.

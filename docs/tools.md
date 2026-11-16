@@ -129,7 +129,7 @@ Attachment files still download only when you click them in Outlook. One search 
 
 What it does to your Mac while it runs, for up to a minute:
 
-- It brings Outlook to the front and types the query into its search box. Do not type meanwhile. If another app comes to the front, it stops before the next key press.
+- It brings Outlook to the front, switches it to the Mail view and types the query into its search box. Outlook is left there, showing the search. Do not type meanwhile. If another app comes to the front, it stops before the next key press.
 - It moves the mouse pointer over the result list to scroll it, and back.
 - It marks the results it opens as read. Nothing else in the mailbox changes: it never sends, moves, deletes or archives.
 

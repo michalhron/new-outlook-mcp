@@ -12,7 +12,8 @@ the normal sync finds it. Measured on Outlook 16.115 (2026-11-15):
 
 What this touches, and what it never does:
 
-- It takes over Outlook's window while it runs and types into its search box.
+- It takes over Outlook's window while it runs, switches it to the Mail view and types into its
+  search box. Outlook is left in the Mail view, showing the search.
 - Selecting a message marks it read if it was unread. Nothing else in the mailbox changes.
 - It sends only these events: Cmd-A, the query and Return into the search field (checked to
   have the focus first), and scroll-wheel events over the result list, for which it moves the
@@ -56,7 +57,11 @@ function run(argv) {
     });
   }
   function listPane() { return mainWindow().splitterGroups[0].splitterGroups[0].splitterGroups[0].groups[0]; }
-  function rowCount() { try { return listPane().tables[0].rows.length; } catch (e) { return -1; } }
+  // -1: the mail view is not there at all. 0: it is there, with no result list (a search without hits).
+  function rowCount() {
+    try { return listPane().tables[0].rows.length; } catch (e) {}
+    try { mainWindow().splitterGroups[0].splitterGroups[0].splitterGroups[0].role(); return 0; } catch (e) { return -1; }
+  }
   function waitStable(polls) {
     let last = -2, stable = 0;
     for (let i = 0; i < polls; i++) {
@@ -73,6 +78,12 @@ function run(argv) {
   }
 
   outlook.activate(); delay(1.0);
+  // Outlook may be showing the calendar or another module: the search box there does not search mail.
+  try {
+    proc.menuBars[0].menuBarItems.byName("View").menus[0].menuItems.byName("Go To").menus[0]
+        .menuItems.byName("Mail").click();
+  } catch (e) { return "error=could not switch Outlook to its Mail view"; }
+  delay(1.0);
   try {
     proc.menuBars[0].menuBarItems.byName("Edit").menus[0].menuItems.byName("Find").menus[0]
         .menuItems.byName("Outlook Items Search").click();
@@ -86,7 +97,7 @@ function run(argv) {
   if (!proc.frontmost() || !focusedIsSearchField()) return "error=the search box lost the focus before the search started";
   se.keyCode(36);
   const first = waitStable(40);
-  if (first < 0) return "error=result list not found";
+  if (first < 0) return "error=Outlook's mail list was not found after the search";
   out.push("rows_first=" + first);
 
   // Scroll with wheel events over the list: this loads more results and selects nothing.

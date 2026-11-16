@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/assets/banner.svg" alt="new-outlook-mcp: Claude reads your Outlook mail and calendar from the files already on your Mac" width="100%"></p>
 
-A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API.
+A local, read-only MCP server that lets Claude search and read your Outlook for Mac mail and calendar. It works only from files Outlook already keeps on your Mac. It uses no online API. One optional tool, `fetch_from_outlook`, operates Outlook's own search window so that Outlook downloads older mail first.
 
 ## Why it exists
 

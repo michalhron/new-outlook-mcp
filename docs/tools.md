@@ -1,8 +1,8 @@
 # Tool reference
 
-The MCP tools Claude sees, with their parameters. All mail and calendar tools are read-only. Bodies come back as plain text. Calendar times are shown in your Mac's timezone unless a tool gets a `timezone`. Optional parameters are marked with `?`.
+The MCP tools Claude sees, with their parameters. All mail and calendar tools are read-only, except `fetch_from_outlook`, which operates Outlook's window. Bodies come back as plain text. Calendar times are shown in your Mac's timezone unless a tool gets a `timezone`. Optional parameters are marked with `?`.
 
-Contents: [Mail](#mail) · [Attachments and files](#attachments-and-files) · [Calendar](#calendar) · [Drafts](#drafts) · [Status](#status) · [Keyword search syntax](#keyword-search-syntax)
+Contents: [Mail](#mail) · [Attachments and files](#attachments-and-files) · [Calendar](#calendar) · [Drafts](#drafts) · [Fetching older mail](#fetching-older-mail) · [Status](#status) · [Keyword search syntax](#keyword-search-syntax)
 
 ## Mail
 
@@ -30,7 +30,7 @@ Mail that resembles one email or one attachment. Give exactly one of the two ids
 
 `get_email(email_id, offset?, max_chars?, include_headers?)`
 
-One message: metadata, attachment list and the plain-text body. `email_id` is the archive id from a search or an Internet Message-ID. Long bodies are paged with `offset` and `max_chars` (default 8,000). `include_headers` adds the raw headers when they are stored. `is_read`, `flag` (`none`, `flagged`, `complete`), `importance` and `categories` are the state at the last sync, or null when unknown. `flag_due` and `flag_completed` appear when set.
+One message: metadata, attachment list and the plain-text body. `email_id` is the archive id from a search or an Internet Message-ID. Long bodies are paged with `offset` and `max_chars` (default 8,000). `include_headers` adds the raw headers when they are stored. `is_read`, `flag` (`none`, `flagged`, `complete`), `importance` and `categories` are the state at the last sync, or null when unknown. `flag_due` and `flag_completed` appear when set. `sent_by` appears when a list or a delegate sent the message on behalf of `from`.
 
 `get_thread(email_id, max_messages?, body_chars?, subject_fallback?)`
 
@@ -105,6 +105,33 @@ Opens a draft answering an archived email, with the recipients, a `Re:` subject 
 `create_event_draft(subject, start, end?, all_day?, location?, body?, attendees?, timezone?)`
 
 Experimental. Writes an `.ics` file and opens it in Outlook, so Outlook offers to add the event. `end` defaults to one hour after `start`.
+
+## Fetching older mail
+
+`fetch_from_outlook(query, open_top?, scroll?)`
+
+Makes Outlook download mail that is not on this Mac yet, then imports it. New Outlook keeps about two months of mail locally and fetches older mail only when its own window asks for it, so this tool runs a search in that window.
+
+- `query`: what to type into Outlook's search box. Words, or Outlook's search syntax: `from:name`, `subject:word`, `hasattachments:yes`, `received:2026-01-01..2026-02-28`.
+- `open_top` (default 25, at most 100): how many results to open, from the top. `0` only scrolls.
+- `scroll` (default true): scroll the result list to load more than the first screen.
+
+What arrives:
+
+| A result that was | arrives with |
+|---|---|
+| only scrolled past | subject, sender, date, folder and a preview of about 255 characters |
+| opened | the full body, recipients and attachment records, for its whole conversation |
+
+Attachment files still download only when you click them in Outlook. One search reaches a limited stretch of time (a plain word search stopped after about eight months in a test), so use a `received:` date range to go further back. Mail the legacy archive already holds is complete without this tool.
+
+What it does to your Mac while it runs, for up to a minute:
+
+- It brings Outlook to the front and types the query into its search box. Do not type meanwhile. If another app comes to the front, it stops before the next key press.
+- It moves the mouse pointer over the result list to scroll it, and back.
+- It marks the results it opens as read. Nothing else in the mailbox changes: it never sends, moves, deletes or archives.
+
+It needs Accessibility permission for the program that runs the server (System Settings > Privacy & Security > Accessibility). It depends on the layout of Outlook's window, so an Outlook update can break it; it then says which step failed and changes nothing.
 
 ## Status
 

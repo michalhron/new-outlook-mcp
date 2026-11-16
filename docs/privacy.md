@@ -7,6 +7,7 @@ What the project does with your mail, and how to keep some of it out.
 - Copies only. Every sync first copies Outlook's database files to a private folder and parses the copy. Write-once files such as cached attachments are read in place, read-only. Nothing ever writes to Outlook's folders.
 - No Microsoft servers. The project never calls Graph, EWS or any other Microsoft API and never reuses Outlook's tokens.
 - No network, with two exceptions you start yourself: the ICS links you add, and the one-time model download for search by meaning (`new-outlook embed --download`).
+- One tool operates Outlook itself. `fetch_from_outlook` types a search into Outlook's window, scrolls the results and opens the first ones, so that Outlook downloads them. It marks the opened messages as read and changes nothing else. It still writes no file of Outlook's and calls no server; Outlook does the downloading. See [tools.md](tools.md#fetching-older-mail).
 - Drafts only. `create_draft` opens a draft window (a `mailto:` link, or AppleScript when there are attachments) and `create_event_draft` opens an `.ics` file. You review and send or save them in Outlook. No tool sends mail or changes your calendar.
 - Private files. The archive and `config.toml` live in `~/Library/Application Support/new-outlook-mcp/`. `config.toml` holds feed links and privacy rules and is written with mode 600.
 - Reports without content. `status`, `validate`, `coverage` and `experiment` reports hold counts and structure only. Logs and sync reports hold no subjects, names, addresses or text.

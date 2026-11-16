@@ -68,7 +68,7 @@ _MESSAGE = {"key": 0x58C, "subject": 0x598, "topic": 0x4EC, "from_name": 0x56C, 
             "sent": 0x2D8, "received": 0x120, "modified": 0x178, "folder_ref": 0x382, "flags": 0x5E6,
             "has_attachment_bit": 0x40, "state": 0x5EA, "read_bit": 0x02, "importance": 0x4B8,
             "flag_status": 0x5CC, "flag_completed": 0x128, "flag_start": 0x130, "flag_due": 0x138,
-            "categories": 0x484}
+            "categories": 0x484, "sender_name": 0x440, "sender_addr": 0x448}
 #: Flag bits that are not in the "flags" byte: bit field -> the field that holds its byte.
 BIT_BYTES = {"read_bit": "state"}
 _RECIPIENT = {"name": 0x124, "addr": 0x12C}
@@ -96,8 +96,9 @@ FIELDS = {
     (C_FOLDER, 0x4C2): {"name": 0x434, "type": 0x47C},
     (C_FOLDER, 0x4D8): {"name": 0x448, "type": 0x490},
     (C_BODY, 0x740): {"html": 0x678, "file": 0x2B2},
-    (C_BODY, 0x74E): {"html": 0x684, "file": 0x2BA},
-    (C_BODY, 0x752): {"html": 0x684, "file": 0x2BA},
+    # "html" is the part this message added; "html_full" the whole body with quoted history. Not located on 0x740.
+    (C_BODY, 0x74E): {"html": 0x684, "html_full": 0x67C, "file": 0x2BA},
+    (C_BODY, 0x752): {"html": 0x684, "html_full": 0x67C, "file": 0x2BA},
     # Event fields from +0x30c on moved 4 bytes in 16.115, and the all-day and cancelled flags moved up one bit.
     (C_EVENT, 0x455): _EVENT_FIXED | {"uid": 0x334, "subject": 0x400, "tz": 0x30C, "location": 0x344, "org_name": 0x374,
                        "org_addr": 0x37C, "attendees": 0x36C, "show_as": 0x330, "event_type": 0x388,
@@ -119,7 +120,8 @@ for _cls, _fields in ((C_MESSAGE, _MESSAGE), (C_RECIPIENT, _RECIPIENT), (C_ATTAC
 RECIPIENT_KIND = {0xCC: "to", 0xCD: "cc", 0xCE: "bcc", 0x19D: "reply_to"}
 IMPORTANCE = {0: "low", 1: "normal", 2: "high"}
 FLAG_STATUS = {0: "none", 1: "complete", 2: "flagged"}
-WELL_KNOWN_FOLDER = {0x61: "inbox", 0x63: "archive", 0x64: "drafts", 0x65: "sentitems", 0x67: "deleteditems"}
+WELL_KNOWN_FOLDER = {0x61: "inbox", 0x63: "archive", 0x64: "drafts", 0x65: "sentitems", 0x66: "snoozed",
+                     0x67: "deleteditems"}
 MY_RESPONSE = {0: "accepted", 1: "tentative", 2: "declined", 3: "organizer", 4: "none"}
 ATTENDEE_RESPONSE = {0: "accepted", 1: "tentative", 2: "declined", 4: "none"}
 SHOW_AS = {0: "free", 1: "tentative", 2: "busy", 3: "oof"}
@@ -450,6 +452,8 @@ class HxMessage:
     subject: str | None
     from_name: str | None
     from_addr: str | None
+    sender_name: str | None  # the Sender header, present when someone or something sent on behalf of From
+    sender_addr: str | None
     to: list[tuple[str | None, str | None]]
     cc: list[tuple[str | None, str | None]]
     bcc: list[tuple[str | None, str | None]]  # only on the sender's own copy (Sent Items, Drafts)
@@ -551,6 +555,10 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
         bodies = store.copies(C_BODY, mid)
         if bodies:
             raw = store.first(bodies, lambda o: o.blob(o.at("html")))
+            if not raw:
+                # Some messages have only the full body (with quoted history): better than the preview.
+                raw = store.first(bodies, lambda o: o.blob(FIELDS[(o.cls, o.fs)]["html_full"])
+                                  if "html_full" in FIELDS[(o.cls, o.fs)] else None)
             body_html = raw.decode("utf-8", "replace") if raw else None
 
             def _bfile(o: Obj) -> str | None:
@@ -567,6 +575,8 @@ def iter_messages(store: Store) -> Iterator[HxMessage]:
             subject=store.first(c, lambda o: o.text(o.at("subject"))) or store.first(c, lambda o: o.text(o.at("topic"))),
             from_name=store.first(c, lambda o: o.text(o.at("from_name"))),
             from_addr=store.first(c, lambda o: o.text(o.at("from_addr"))),
+            sender_name=ob.text(ob.at("sender_name")),
+            sender_addr=ob.text(ob.at("sender_addr")),
             to=[r for _, r in sorted(rc.get("to", []))],
             cc=[r for _, r in sorted(rc.get("cc", []))],
             bcc=[r for _, r in sorted(rc.get("bcc", []))],

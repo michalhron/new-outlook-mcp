@@ -2,16 +2,20 @@
 
 ## Known limitations
 
-- The archive only sees what Outlook keeps on this Mac. New Outlook caches about the last two months densely, plus older items you opened or searched for. Search for old mail in Outlook to bring it into the cache.
+- The archive only sees what Outlook keeps on this Mac. New Outlook caches about the last two months densely, plus older items you opened or searched for. Search for old mail in Outlook to bring it into the cache, or let the `fetch_from_outlook` tool run that search ([tools.md](tools.md#fetching-older-mail)).
+- `fetch_from_outlook` depends on the layout of Outlook's window and can stop working after an Outlook update. Attachment files of fetched mail still need a click in Outlook.
 - Read state, folder, flag and categories of New Outlook mail are the state at the last sync. Once a message has left Outlook's cache, the archive keeps the last state it saw: a later move, or a deletion, is not noticed. Drafts usually count as unread.
 - A message with copies in two folders (mail to yourself) is one archive row, shown in the folder of the received copy.
 - Flag, importance and categories are known for mail seen in New Outlook's cache only, not for mail that exists only in the legacy archive.
 - Bcc recipients are known only for mail you sent, from its Sent Items copy.
 - Recurring events in New Outlook: every repeat pattern and deleted occurrences are decoded. An occurrence that was moved or edited still shows at its original time, because the cache does not hold where it went. A published ICS feed has those too ([calendar.md](calendar.md)).
 - An event you just created appears after the sync that follows Outlook saving it to the server.
+- A meeting you declined disappears from New Outlook's cache, so it is not in the archive's calendar unless a sync saw it before you answered.
 - Orphan files carry the date of the file and have no sender or folder.
 - Free/busy covers only your own calendar.
-- `hxcore.hfl`, New Outlook's journal, is copied but not parsed. Very recent changes may live only there until Outlook writes them into `HxStore.hxd`.
+- Changes in Outlook reach its cache file within about a minute, and the archive with the sync after that. (`hxcore.hfl` turned out to be a diagnostic log, not a journal, so there is nothing fresher to read.)
+- The body of a New Outlook message is the part that message added. Quoted history is left out unless that is all Outlook stored.
+- Folders are flat, by name: where New Outlook stores nesting has not been found.
 - Search by meaning has no similarity cutoff, does not re-embed messages that a later sync completes, and does not cover orphan files. See [semantic-search.md](semantic-search.md#limits).
 
 ## When an Outlook update breaks the import

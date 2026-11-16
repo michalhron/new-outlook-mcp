@@ -195,6 +195,8 @@ class HxStoreImporter(Importer):
         rec.message_id = m.message_id
         rec.subject = m.subject
         rec.from_name, rec.from_addr = m.from_name, m.from_addr
+        if m.sender_addr and m.sender_addr.lower() != (m.from_addr or "").lower():
+            rec.sender_name, rec.sender_addr = m.sender_name, m.sender_addr
         rec.to = [s for s in (_fmt(n, a) for n, a in m.to) if s]
         rec.cc = [s for s in (_fmt(n, a) for n, a in m.cc) if s]
         rec.bcc = [s for s in (_fmt(n, a) for n, a in m.bcc) if s]

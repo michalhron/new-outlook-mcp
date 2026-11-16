@@ -203,7 +203,7 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
         (e / "7.dat").write_bytes(gzip.compress(b"<html><body><p>A very long synthetic report.</p></body></html>"))
 
     def msg(oid, *, subject, frm, mid, sent, received, folder, irt=None, preview="", has_att=False, stamp=1,
-            read=True, importance=1, flag=0, flag_due=None, categories=()):
+            read=True, importance=1, flag=0, flag_due=None, categories=(), sender=None):
         o = ObjSpec(hx.C_MESSAGE, oid, owner=MAIL_ACCOUNT, stamp=stamp,
                     strings={0x598: subject, 0x56C: frm[0], 0x574: frm[1], 0x4CC: mid, 0x4D4: "IPM.Note",
                              0x518: preview},
@@ -223,6 +223,8 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
                        m("flag_due"): ticks(flag_due) if flag_due else hx.TICKS_MAX})
         if categories:
             o.blobs[m("categories")] = counted_strings(categories)
+        if sender:
+            o.strings[m("sender_name")], o.strings[m("sender_addr")] = sender
         # 51-byte stable id blob (real ones start 00 09 00 2e)
         o.blobs[0x58C] = b"\x00\x09\x00\x2e" + oid.to_bytes(8, "little") * 5 + b"\x00\x00\x00"
         return o
@@ -272,7 +274,8 @@ def mailbox(profile: Path, *, with_files: bool = True, sizes: dict[int, int] = h
             folder=SENT, preview="Short preview only", stamp=1),
         msg(0x5003, subject="Newsletter", frm=("Jan Synth", "jan@example.com"), mid="<hx-3@example.com>",
             sent=datetime(2026, 8, 20, tzinfo=timezone.utc), received=datetime(2026, 8, 20, tzinfo=timezone.utc),
-            folder=INBOX, preview="Short preview only", stamp=2),
+            folder=INBOX, preview="Short preview only", stamp=2,
+            sender=("Synth List", "list-bounces@lists.example.com")),
         # calendar
         ObjSpec(hx.C_CALENDAR, CALENDAR, owner=ACCOUNT, fs=0x330, strings={0x30C: "Calendar", 0x2C8: ME}),
     ]

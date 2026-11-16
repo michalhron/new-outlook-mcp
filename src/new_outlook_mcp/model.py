@@ -86,6 +86,9 @@ class MessageRecord:
     attachments: list[AttachmentInfo] = field(default_factory=list)
     raw_source_path: str | None = None
     raw_source: bytes | None = None
+    #: The Sender header, when it differs from From (a list or a delegate sent it on behalf of From).
+    sender_name: str | None = None
+    sender_addr: str | None = None
     is_read: bool | None = None
     importance: str | None = None  # "low", "normal", "high"
     flag_status: str | None = None  # "none", "flagged", "complete"

@@ -6,7 +6,7 @@ Contents: [Mail](#mail) · [Attachments and files](#attachments-and-files) · [C
 
 ## Mail
 
-`search_emails(query?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, attachment_name?, unread?, flagged?, importance?, category?, sort?, limit?, offset?, mode?)`
+`search_emails(query?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, attachment_name?, unread?, flagged?, importance?, category?, sort?, limit?, offset?, mode?, sync_first?, fetch_if_few_results?)`
 
 Search mail and filter it. Without `query` it lists the mail that matches the filters.
 
@@ -19,6 +19,8 @@ Search mail and filter it. Without `query` it lists the mail that matches the fi
 - `sort`: `relevance` (default), `date_desc` or `date_asc`.
 - `limit` 1 to 200 (default 20), `offset` for paging. The result has `next_offset` when there is more.
 - `mode`: `keyword` (default), `semantic` or `hybrid`. The last two need [search by meaning](semantic-search.md).
+- `sync_first`: import from Outlook's cache before searching.
+- `fetch_if_few_results` (default false): when the first page has fewer than 3 hits, ask Outlook for more and search again. It runs [`fetch_from_outlook`](#fetching-older-mail) with the words of the query, the `sender`, the date range and `has_attachment`, and opens the first 15 results. The result then has a `fetched` section with what Outlook was asked and how much arrived. It needs a query or a sender, and it has the side effects of that tool: it takes over Outlook's window for up to a minute and marks the opened results as read. If Outlook cannot be operated, the first result is returned with `fetch_error`.
 
 `semantic_search(query, mode?, sender?, recipient?, folder?, account?, date_from?, date_to?, has_attachment?, limit?)`
 

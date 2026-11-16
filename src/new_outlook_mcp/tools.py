@@ -312,9 +312,64 @@ def _with_warning(out: dict, archive: Archive) -> dict:
     return out
 
 
-def search_emails(archive: Archive, query: str | None = None, **kwargs) -> dict:
-    """Search archived mail."""
-    return _with_freshness(_search_emails(archive, query, **kwargs), archive)
+#: `fetch_if_few_results` asks Outlook for more when the archive finds fewer hits than this.
+FEW_RESULTS = 3
+#: Results the automatic fetch opens. Fewer than a direct fetch_from_outlook call, to keep a search short.
+AUTO_FETCH_OPEN = 15
+_FTS_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
+
+
+def outlook_query(query: str | None, *, from_: str | None = None, date_from: str | None = None,
+                  date_to: str | None = None, has_attachment: bool | None = None) -> str:
+    """The archive search as text for Outlook's search box: its words, plus the filters Outlook's
+    search syntax can express. Empty when there is nothing to search for."""
+    parts = [t for t in re.findall(r"\w[\w.@'-]*", query or "", flags=re.UNICODE) if t.upper() not in _FTS_OPERATORS]
+    sender = " ".join(re.findall(r"[\w.@'-]+", from_ or "", flags=re.UNICODE))
+    if sender:
+        parts.append(f'from:"{sender}"' if " " in sender else f"from:{sender}")
+    if not parts:
+        return ""  # a date range alone would fetch a whole period: that is for a deliberate fetch_from_outlook call
+    lo, hi = _parse_date(date_from), _parse_date(date_to, end=True)
+    day = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")  # noqa: E731
+    if lo is not None or hi is not None:
+        # Always a closed range: that is the one date form checked against Outlook's search box.
+        first = day(lo) if lo is not None else "2000-01-01"
+        last = day(hi) if hi is not None else datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        parts.append(f"received:{first}..{last}")
+    if has_attachment:
+        parts.append("hasattachments:yes")
+    return " ".join(parts)
+
+
+def search_emails(archive: Archive, query: str | None = None, *, fetch_if_few_results: bool = False,
+                  fetcher=None, **kwargs) -> dict:
+    """Search archived mail.
+
+    With `fetch_if_few_results`, a first page with fewer than FEW_RESULTS hits makes Outlook search
+    for the same thing (see fetch_from_outlook) and the archive is searched again.
+    """
+    out = _search_emails(archive, query, **kwargs)
+    if fetch_if_few_results and not kwargs.get("offset") and out.get("total", 0) < FEW_RESULTS:
+        asked = outlook_query(query, from_=kwargs.get("from_"), date_from=kwargs.get("date_from"),
+                              date_to=kwargs.get("date_to"), has_attachment=kwargs.get("has_attachment"))
+        if not asked:
+            out["fetch_skipped"] = "nothing to ask Outlook for: give a query or a sender"
+        else:
+            found_before = out.get("total", 0)
+            try:
+                got = (fetcher or fetch_from_outlook)(archive, asked, open_top=AUTO_FETCH_OPEN)
+            except ToolInputError as exc:
+                out["fetch_error"] = str(exc)
+            else:
+                out = _search_emails(archive, query, **kwargs)
+                out["fetched"] = {"outlook_query": asked, "result_rows": got["result_rows"], "opened": got["opened"],
+                                  "new_in_archive": got["new_in_archive"], "found_before": found_before,
+                                  "note": ("Outlook was asked because the archive had few hits. Results it only listed "
+                                           "have a preview, not the full text, so they may match on subject or sender "
+                                           "only. Outlook keeps writing for a moment: search again if this is still short.")}
+                if got.get("warning"):
+                    out["fetched"]["warning"] = got["warning"]
+    return _with_freshness(out, archive)
 
 
 def _search_emails(

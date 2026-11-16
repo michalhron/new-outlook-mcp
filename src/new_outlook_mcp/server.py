@@ -31,7 +31,8 @@ A result with a `warning` field may be missing newer mail: tell the user, do not
 treat an empty result as proof that a message does not exist.
 The archive holds what Outlook has kept on this Mac. When a search misses mail the user expects (often mail
 older than about two months), fetch_from_outlook makes Outlook download it: it operates Outlook's window for up
-to a minute and marks the results it opens as read, so say so before calling it.
+to a minute and marks the results it opens as read, so say so before calling it. search_emails with
+fetch_if_few_results does the same in one step when the archive finds fewer than 3 emails.
 Nothing here can send mail, answer invitations, or change calendar events.
 create_draft, create_reply_draft and create_event_draft only open a draft that the user reviews
 and sends or saves themselves.
@@ -80,6 +81,11 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         sync_first: Annotated[bool, Field(
             description="Import new mail from Outlook's local cache before searching; reported in `sync_first`. "
                         "Takes a few seconds")] = False,
+        fetch_if_few_results: Annotated[bool, Field(
+            description="If the archive finds fewer than 3 emails, make Outlook search for the same words and sender "
+                        "(as fetch_from_outlook does) and search again; reported in `fetched`. This takes over "
+                        "Outlook's window for up to a minute and marks the results it opens as read, so tell the "
+                        "user first. Needs a query or a sender")] = False,
     ) -> dict:
         """Search archived emails. Returns summaries with an `id` for get_email/get_thread. `freshness` says how
         current the archive is. If `warning` is present the archive may be missing newer mail: tell the user."""
@@ -87,7 +93,8 @@ def build_server(db_path: Path | None = None) -> MCPServer:
         out = call(tools.search_emails, query, from_=sender, to=recipient, folder=folder, account=account,
                    date_from=date_from, date_to=date_to, has_attachment=has_attachment,
                    attachment_name=attachment_name, unread=unread, flagged=flagged, importance=importance,
-                   category=category, sort=sort, limit=limit, offset=offset, mode=mode)
+                   category=category, sort=sort, limit=limit, offset=offset, mode=mode,
+                   fetch_if_few_results=fetch_if_few_results)
         if synced is not None:
             out["sync_first"] = [{"source": r.source, "status": r.status, "new": r.inserted,
                                   "message": r.message[:300]} for r in synced]

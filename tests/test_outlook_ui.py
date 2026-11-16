@@ -87,3 +87,67 @@ def test_fetch_tool_turns_failures_into_input_errors(loaded):
         tools.fetch_from_outlook(loaded, "budget", runner=boom, syncer=no_sync, sleep=lambda s: None)
     with pytest.raises(tools.ToolInputError):
         tools.fetch_from_outlook(loaded, "", runner=boom, syncer=no_sync, sleep=lambda s: None)
+
+
+# ------------------------------------------- search_emails(fetch_if_few_results)
+
+def _fetcher(calls, **reply):
+    def fetch(archive, query, *, open_top):
+        calls.append((query, open_top))
+        return {"result_rows": 12, "opened": open_top, "new_in_archive": 4, **reply}
+    return fetch
+
+
+def test_outlook_query_keeps_words_and_the_filters_outlook_understands():
+    q = tools.outlook_query
+    assert q('budget AND "field trip" NOT zebra*') == "budget field trip zebra"
+    assert q("budget", from_="Erin Synth") == 'budget from:"Erin Synth"'
+    assert q(None, from_="erin@example.org") == "from:erin@example.org"
+    assert q("budget", date_from="2026-01-01", date_to="2026-02-28") == "budget received:2026-01-01..2026-02-28"
+    assert q("budget", date_from="2026-01-01").startswith("budget received:2026-01-01..20")
+    assert q("budget", date_to="2026-02-28") == "budget received:2000-01-01..2026-02-28"
+    assert q("budget", has_attachment=True) == "budget hasattachments:yes"
+    assert q("budget", has_attachment=False) == "budget"
+    # Nothing to search for: no fetch of a whole period.
+    assert q(None) == "" and q("  ") == "" and q(None, date_from="2026-01-01") == "" and q("OR") == ""
+    # Nothing that could act as a key or an operator in the search box survives.
+    assert q('x"; \n\t(y)') == "x y"
+
+
+def test_few_results_trigger_one_fetch_and_a_second_search(loaded):
+    calls = []
+    out = tools.search_emails(loaded, "nonexistentword", fetch_if_few_results=True, fetcher=_fetcher(calls))
+    assert calls == [("nonexistentword", tools.AUTO_FETCH_OPEN)]
+    assert out["fetched"]["outlook_query"] == "nonexistentword" and out["fetched"]["found_before"] == 0
+    assert out["fetched"]["new_in_archive"] == 4 and out["total"] == 0 and "freshness" in out
+
+
+def test_enough_results_or_a_later_page_do_not_fetch(loaded):
+    def forbidden(*a, **k):
+        raise AssertionError("no fetch expected")
+    many = tools.search_emails(loaded, None, account="uni.example", fetch_if_few_results=True, fetcher=forbidden)
+    assert many["total"] >= tools.FEW_RESULTS and "fetched" not in many
+    page2 = tools.search_emails(loaded, "nonexistentword", offset=20, fetch_if_few_results=True, fetcher=forbidden)
+    assert "fetched" not in page2
+    off = tools.search_emails(loaded, "nonexistentword", fetcher=forbidden)  # the option is off by default
+    assert "fetched" not in off
+
+
+def test_fetch_is_skipped_without_words_and_failures_keep_the_first_result(loaded):
+    def forbidden(*a, **k):
+        raise AssertionError("no fetch expected")
+    out = tools.search_emails(loaded, None, date_from="2031-01-01", fetch_if_few_results=True, fetcher=forbidden)
+    assert "fetch_skipped" in out and out["total"] == 0
+
+    def failing(archive, query, *, open_top):
+        raise tools.ToolInputError("Could not operate Outlook: another app came to the front")
+    out = tools.search_emails(loaded, "nonexistentword", fetch_if_few_results=True, fetcher=failing)
+    assert "another app" in out["fetch_error"] and out["total"] == 0 and "fetched" not in out
+
+
+def test_filters_reach_outlook_and_a_fetch_warning_is_passed_on(loaded):
+    calls = []
+    out = tools.search_emails(loaded, "nonexistentword", from_="erin", date_from="2026-01-01", date_to="2026-01-31",
+                              fetch_if_few_results=True, fetcher=_fetcher(calls, warning="stopped, another app came to the front"))
+    assert calls[0][0] == "nonexistentword from:erin received:2026-01-01..2026-01-31"
+    assert out["fetched"]["warning"].startswith("stopped")

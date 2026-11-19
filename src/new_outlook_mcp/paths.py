@@ -13,13 +13,31 @@ def _env_path(var: str, default: Path) -> Path:
     return Path(value).expanduser() if value else default
 
 
+def _discover_profile_dir() -> Path:
+    """Locate the active Outlook profile directory.
+
+    New Outlook names it 'Main Profile' on most installs, but some installs (the MacBook's
+    16.109.x and the Mac mini's 16.115) use 'Main Identity'. Prefer an explicit env override;
+    otherwise scan the Profiles folder for the subdirectory that actually holds HxStore.hxd, so
+    sync and the watcher target the real store instead of a hardcoded name.
+    """
+    base = Path.home() / "Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles"
+    for name in ("Main Profile", "Main Identity"):
+        cand = base / name
+        if (cand / "HxStore.hxd").is_file():
+            return cand
+    try:
+        for cand in sorted(base.iterdir()):
+            if cand.is_dir() and (cand / "HxStore.hxd").is_file():
+                return cand
+    except OSError:
+        pass
+    return base / "Main Profile"
+
+
 def profile_dir() -> Path:
-    """Outlook 'Main Profile' directory (holds Data/ and HxStore.hxd)."""
-    return _env_path(
-        "OUTLOOK_PROFILE_DIR",
-        Path.home()
-        / "Library/Group Containers/UBF8T346G9.Office/Outlook/Outlook 15 Profiles/Main Profile",
-    )
+    """Outlook profile directory (holds Data/ and HxStore.hxd)."""
+    return _env_path("OUTLOOK_PROFILE_DIR", _discover_profile_dir())
 
 
 def legacy_data_dir() -> Path:
